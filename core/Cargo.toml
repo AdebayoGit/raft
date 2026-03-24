@@ -1,0 +1,42 @@
+[package]
+name = "raft-db"
+version = "0.1.0"
+edition = "2021"
+description = "Mobile-native embedded database. Offline-first by design."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/raft-db"
+keywords = ["database", "embedded", "mobile", "offline-first", "crdt"]
+categories = ["database-implementations", "embedded"]
+
+[lib]
+name = "raftdb"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+bytes = "1"
+crc32fast = "1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+tokio = { version = "1", features = ["rt", "sync"], optional = true }
+
+[features]
+default = []
+async = ["tokio"]
+ffi = []                    # enables C ABI layer
+sync = ["async"]            # enables sync engine
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
+
+[[bench]]
+name = "storage"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"             # smaller binary — important for mobile
+strip = true
