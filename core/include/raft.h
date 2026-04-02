@@ -101,7 +101,7 @@ extern "C" {
  * - `path` must be a valid null-terminated UTF-8 C string.
  * - `out_err` must be a valid pointer to an `RftError`.
  */
-struct RaftDb *rft_open(const char *path, RftError *out_err);
+rft_ struct RaftDb *rft_open(const char *path, RftError *out_err);
 #endif
 
 #if defined(RAFT_DB_FFI)
@@ -113,7 +113,7 @@ struct RaftDb *rft_open(const char *path, RftError *out_err);
  * - `db` must be a handle returned by [`rft_open`], or null (no-op).
  * - After this call, `db` is dangling and must not be used.
  */
-void rft_close(struct RaftDb *db);
+rft_ void rft_close(struct RaftDb *db);
 #endif
 
 #if defined(RAFT_DB_FFI)
@@ -126,6 +126,7 @@ void rft_close(struct RaftDb *db);
  * - `key` must point to at least `key_len` readable bytes.
  * - `value` must point to at least `value_len` readable bytes.
  */
+rft_
 RftError rft_put(struct RaftDb *db,
                  const uint8_t *key,
                  uintptr_t key_len,
@@ -153,6 +154,7 @@ RftError rft_put(struct RaftDb *db,
  *   bytes, or be null if only querying the required size.
  * - `out_len` must be a valid, non-null pointer to a `usize`.
  */
+rft_
 RftError rft_get(struct RaftDb *db,
                  const uint8_t *key,
                  uintptr_t key_len,
@@ -172,7 +174,7 @@ RftError rft_get(struct RaftDb *db,
  * - `db` must be a valid, non-null handle from [`rft_open`].
  * - `key` must point to at least `key_len` readable bytes.
  */
-RftError rft_delete(struct RaftDb *db, const uint8_t *key, uintptr_t key_len);
+rft_ RftError rft_delete(struct RaftDb *db, const uint8_t *key, uintptr_t key_len);
 #endif
 
 #ifdef __cplusplus
