@@ -123,6 +123,7 @@ impl SchemaBuilder {
     /// Validates all accumulated fields, returning the first error found.
     ///
     /// Called internally by [`build`](Self::build); exposed for testing.
+    #[allow(dead_code)]
     pub(crate) fn validate_fields(fields: &[FieldDef]) -> Result<(), SchemaError> {
         let mut seen = HashSet::with_capacity(fields.len());
         for f in fields {

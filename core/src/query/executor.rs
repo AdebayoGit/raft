@@ -8,7 +8,7 @@
 
 use crate::index::{BTreeIndex, DocId, HashIndex, Index};
 
-use super::document::{Document, DocumentStore, Value};
+use super::document::{Document, DocumentStore};
 use super::planner::{QueryPlan, ScanStrategy};
 use super::sort::SortDirection;
 use super::Query;

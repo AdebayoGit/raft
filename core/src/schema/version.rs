@@ -138,6 +138,7 @@ pub fn validate_evolution(old: &Schema, new: &Schema) -> EvolutionResult {
 /// Returns `true` if `new` is a valid successor to `old`:
 /// - Additive changes are always valid.
 /// - Breaking changes are valid only if the version was bumped.
+#[allow(dead_code)]
 pub fn is_valid_evolution(old: &Schema, new: &Schema) -> bool {
     match validate_evolution(old, new) {
         EvolutionResult::Identical | EvolutionResult::Additive { .. } => true,
