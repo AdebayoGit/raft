@@ -1,0 +1,30 @@
+{
+  "$schema": "https://nitro.margelo.com/nitro.schema.json",
+  "cxxNamespace": [
+    "raft"
+  ],
+  "ios": {
+    "iosModuleName": "Raft"
+  },
+  "android": {
+    "androidNamespace": [
+      "raft"
+    ],
+    "androidCxxLibName": "Raft"
+  },
+  "autolinking": {
+    "Raft": {
+      "ios": {
+        "language": "swift",
+        "implementationClassName": "HybridRaft"
+      },
+      "android": {
+        "language": "kotlin",
+        "implementationClassName": "HybridRaft"
+      }
+    }
+  },
+  "ignorePaths": [
+    "**/node_modules"
+  ]
+}
