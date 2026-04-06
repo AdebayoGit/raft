@@ -169,7 +169,7 @@ mod tests {
     use crate::index::{BTreeIndex, HashIndex, Index};
     use crate::query::planner::{IndexInfo, IndexKind, QueryPlanner};
     use crate::query::sort::Sort;
-    use crate::query::Filter;
+    use crate::query::{Filter, Value};
     use std::collections::HashMap;
 
     fn make_user(id: u64, name: &str, age: i64, active: bool) -> Document {

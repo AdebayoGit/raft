@@ -114,16 +114,16 @@ fn evaluate_predicate(doc_val: &Value, predicate: Predicate, filter_val: &Value)
         Predicate::Eq => doc_val == filter_val,
         Predicate::Lt => doc_val
             .partial_cmp(filter_val)
-            .map_or(false, |o| o.is_lt()),
+            .is_some_and(|o| o.is_lt()),
         Predicate::Gt => doc_val
             .partial_cmp(filter_val)
-            .map_or(false, |o| o.is_gt()),
+            .is_some_and(|o| o.is_gt()),
         Predicate::Lte => doc_val
             .partial_cmp(filter_val)
-            .map_or(false, |o| o.is_le()),
+            .is_some_and(|o| o.is_le()),
         Predicate::Gte => doc_val
             .partial_cmp(filter_val)
-            .map_or(false, |o| o.is_ge()),
+            .is_some_and(|o| o.is_ge()),
         Predicate::Contains => match (doc_val, filter_val) {
             (Value::String(haystack), Value::String(needle)) => haystack.contains(needle.as_str()),
             (Value::Bytes(haystack), Value::Bytes(needle)) => haystack

@@ -12,5 +12,5 @@ mod event;
 mod live_query;
 
 pub use bus::EventBus;
-pub use event::{MutationEvent, MutationType};
+pub use event::{MutationEvent, MutationOrigin, MutationType};
 pub use live_query::{LiveQuery, QueryDiff, QueryRunner};

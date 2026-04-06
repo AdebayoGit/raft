@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::sync::SyncAuthority;
+
 use super::Schema;
 
 /// A monotonically increasing schema version.
@@ -38,6 +40,11 @@ pub enum BreakingChange {
     /// A field changed from optional to required (existing documents may
     /// lack the field).
     BecameRequired { field: String },
+    /// The collection's sync authority mode changed.
+    SyncAuthorityChanged {
+        old: SyncAuthority,
+        new: SyncAuthority,
+    },
 }
 
 impl std::fmt::Display for BreakingChange {
@@ -57,6 +64,9 @@ impl std::fmt::Display for BreakingChange {
             }
             BreakingChange::BecameRequired { field } => {
                 write!(f, "field `{field}` changed from optional to required")
+            }
+            BreakingChange::SyncAuthorityChanged { old, new } => {
+                write!(f, "sync authority changed from {old} to {new}")
             }
         }
     }
@@ -114,6 +124,14 @@ pub fn validate_evolution(old: &Schema, new: &Schema) -> EvolutionResult {
                 }
             }
         }
+    }
+
+    // Check sync authority change.
+    if old.sync_authority() != new.sync_authority() {
+        breaking.push(BreakingChange::SyncAuthorityChanged {
+            old: old.sync_authority(),
+            new: new.sync_authority(),
+        });
     }
 
     // Detect new fields.
