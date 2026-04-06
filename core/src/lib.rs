@@ -11,6 +11,7 @@ pub mod query;
 pub mod reactive;
 pub mod schema;
 pub mod sstable;
+pub mod sync;
 pub mod transaction;
 pub mod wal;
 

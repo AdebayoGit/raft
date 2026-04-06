@@ -178,7 +178,7 @@ impl QueryPlanner {
                 };
 
                 if let Some(p) = plan {
-                    let dominated = best.as_ref().map_or(true, |b| p.estimated_cost < b.estimated_cost);
+                    let dominated = best.as_ref().is_none_or(|b| p.estimated_cost < b.estimated_cost);
                     if dominated {
                         best = Some(p);
                     }

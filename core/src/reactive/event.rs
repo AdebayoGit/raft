@@ -13,6 +13,16 @@ pub enum MutationType {
     Delete,
 }
 
+/// Whether a mutation originated locally or from a remote sync.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum MutationOrigin {
+    /// The mutation was performed by the local device.
+    #[default]
+    Local,
+    /// The mutation was applied from a remote sync.
+    Remote,
+}
+
 /// A single mutation event broadcast to subscribers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MutationEvent {
@@ -22,6 +32,8 @@ pub struct MutationEvent {
     pub doc_id: DocId,
     /// What kind of mutation occurred.
     pub mutation_type: MutationType,
+    /// Whether this mutation originated locally or from a remote sync.
+    pub origin: MutationOrigin,
 }
 
 impl MutationEvent {
@@ -30,6 +42,7 @@ impl MutationEvent {
             collection: collection.into(),
             doc_id,
             mutation_type: MutationType::Insert,
+            origin: MutationOrigin::Local,
         }
     }
 
@@ -38,6 +51,7 @@ impl MutationEvent {
             collection: collection.into(),
             doc_id,
             mutation_type: MutationType::Update,
+            origin: MutationOrigin::Local,
         }
     }
 
@@ -46,7 +60,14 @@ impl MutationEvent {
             collection: collection.into(),
             doc_id,
             mutation_type: MutationType::Delete,
+            origin: MutationOrigin::Local,
         }
+    }
+
+    /// Returns a copy of this event with the given origin.
+    pub fn with_origin(mut self, origin: MutationOrigin) -> Self {
+        self.origin = origin;
+        self
     }
 }
 

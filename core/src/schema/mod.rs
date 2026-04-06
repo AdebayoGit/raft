@@ -21,12 +21,18 @@ pub use version::{validate_evolution, EvolutionResult, SchemaVersion};
 
 use serde::{Deserialize, Serialize};
 
+use crate::sync::SyncAuthority;
+
 /// A named, versioned collection of field definitions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Schema {
     name: String,
     version: SchemaVersion,
     fields: Vec<FieldDef>,
+    /// Controls how this collection resolves conflicts during sync.
+    /// Defaults to [`SyncAuthority::LocalFirst`] for backward compatibility.
+    #[serde(default)]
+    sync_authority: SyncAuthority,
 }
 
 impl Schema {
@@ -58,5 +64,10 @@ impl Schema {
     /// Returns the number of fields.
     pub fn field_count(&self) -> usize {
         self.fields.len()
+    }
+
+    /// The sync authority mode for this collection.
+    pub fn sync_authority(&self) -> SyncAuthority {
+        self.sync_authority
     }
 }

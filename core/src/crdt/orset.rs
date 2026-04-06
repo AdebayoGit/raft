@@ -64,7 +64,7 @@ impl<T: Eq + std::hash::Hash> OrSet<T> {
     pub fn contains(&self, element: &T) -> bool {
         self.entries
             .get(element)
-            .map_or(false, |tags| !tags.is_empty())
+            .is_some_and(|tags| !tags.is_empty())
     }
 
     /// Returns the number of distinct elements in the set.

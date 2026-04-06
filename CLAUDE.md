@@ -4,7 +4,7 @@
 
 Raft is an embedded, offline-first database built in Rust, designed from the ground up for mobile clients. It is not an adaptation of a server-side database. Every architectural decision assumes the device is the primary compute, connectivity is unreliable, and sync is a feature — not a requirement.
 
-The local database is the source of truth. The network is a sync channel.
+By default, the local database is the source of truth. The network is a sync channel. Developers can configure the authority model per collection via `SyncAuthority` — see [Key Design Decisions](#key-design-decisions).
 
 ---
 
@@ -146,7 +146,7 @@ All mutations are stamped with a **Hybrid Logical Clock (HLC)** and a **device I
 |---|---|---|
 | Storage format | LSM-tree | Lower write amplification than B-tree; better for mobile I/O patterns |
 | Timestamp | HLC (Hybrid Logical Clock) | Causality-aware without requiring clock sync |
-| Conflict resolution | CRDT merge | Automatic, no user-facing conflict dialogs |
+| Conflict resolution | Configurable per-collection | `LocalFirst` (CRDT merge), `RemoteAuthority` (server wins), `RemoteFirst` (read-through) |
 | Query API | Typed predicates | No SQL parser, no string injection, better DX |
 | Sync | Optional, per-collection | Not every collection needs to sync |
 | FFI | C ABI + cbindgen | Maximum portability across language runtimes |

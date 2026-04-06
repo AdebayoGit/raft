@@ -2,6 +2,8 @@
 
 use std::collections::HashSet;
 
+use crate::sync::SyncAuthority;
+
 use super::error::SchemaError;
 use super::field::{CrdtHint, FieldDef, FieldType};
 use super::version::SchemaVersion;
@@ -31,6 +33,7 @@ pub struct SchemaBuilder {
     version: SchemaVersion,
     fields: Vec<FieldDef>,
     seen_names: HashSet<String>,
+    sync_authority: SyncAuthority,
 }
 
 impl SchemaBuilder {
@@ -40,12 +43,22 @@ impl SchemaBuilder {
             version: SchemaVersion(1),
             fields: Vec::new(),
             seen_names: HashSet::new(),
+            sync_authority: SyncAuthority::default(),
         }
     }
 
     /// Sets the schema version. Defaults to `SchemaVersion(1)`.
     pub fn version(mut self, version: SchemaVersion) -> Self {
         self.version = version;
+        self
+    }
+
+    /// Sets the sync authority mode for this collection.
+    ///
+    /// Defaults to [`SyncAuthority::LocalFirst`]. See [`SyncAuthority`] for
+    /// the semantics of each mode.
+    pub fn sync_authority(mut self, authority: SyncAuthority) -> Self {
+        self.sync_authority = authority;
         self
     }
 
@@ -93,6 +106,7 @@ impl SchemaBuilder {
             name: self.name,
             version: self.version,
             fields: self.fields,
+            sync_authority: self.sync_authority,
         })
     }
 
