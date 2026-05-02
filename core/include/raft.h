@@ -58,7 +58,7 @@ enum RftError
 #endif
 #if defined(RAFT_DB_FFI)
     /**
-     * The requested key was not found.
+     * The requested key/document was not found.
      */
     RFT_ERROR_NOT_FOUND = 4,
 #endif
@@ -69,6 +69,33 @@ enum RftError
      */
     RFT_ERROR_BUFFER_TOO_SMALL = 5,
 #endif
+#if defined(RAFT_DB_FFI)
+    /**
+     * A document or filter passed via JSON failed to parse.
+     */
+    RFT_ERROR_INVALID_JSON = 6,
+#endif
+#if defined(RAFT_DB_FFI)
+    /**
+     * A transaction commit failed because a tracked document was modified
+     * concurrently.
+     */
+    RFT_ERROR_TRANSACTION_CONFLICT = 7,
+#endif
+#if defined(RAFT_DB_FFI)
+    /**
+     * A handle (transaction, query result, subscription) is invalid —
+     * already consumed, freed, or never created.
+     */
+    RFT_ERROR_INVALID_HANDLE = 8,
+#endif
+#if defined(RAFT_DB_FFI)
+    /**
+     * A subscription id passed to [`rft_unobserve`](super::rft_unobserve)
+     * is not registered.
+     */
+    RFT_ERROR_UNKNOWN_SUBSCRIPTION = 9,
+#endif
 };
 #ifndef __cplusplus
 typedef uint32_t RftError;
@@ -77,12 +104,37 @@ typedef uint32_t RftError;
 
 #if defined(RAFT_DB_FFI)
 /**
- * Opaque handle wrapping a [`StorageEngine`].
+ * Opaque handle wrapping a [`Database`] and its async runtime.
  *
  * Allocated on the heap by [`rft_open`](super::rft_open) and freed by
  * [`rft_close`](super::rft_close). C callers treat it as `*mut c_void`.
  */
 typedef struct RaftDb RaftDb;
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Opaque query-result handle. Holds the snapshot of matching documents.
+ */
+typedef struct RaftQueryResult RaftQueryResult;
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Opaque transaction handle.
+ */
+typedef struct RaftTransaction RaftTransaction;
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * C-compatible callback signature.
+ *
+ * `event_json` is a null-terminated UTF-8 string valid only for the
+ * duration of the call. `user_data` is the opaque pointer passed to
+ * [`rft_observe`].
+ */
+typedef void (*RftObserveCallback)(const char *event_json, void *user_data);
 #endif
 
 #ifdef __cplusplus
@@ -106,7 +158,8 @@ rft_ struct RaftDb *rft_open(const char *path, RftError *out_err);
 
 #if defined(RAFT_DB_FFI)
 /**
- * Close and free a database handle.
+ * Close and free a database handle. Aborts any pending observer tasks
+ * before dropping the runtime.
  *
  * # Safety
  *
@@ -118,7 +171,7 @@ rft_ void rft_close(struct RaftDb *db);
 
 #if defined(RAFT_DB_FFI)
 /**
- * Insert or update a key-value pair.
+ * Insert or update a key-value pair on the raw engine.
  *
  * # Safety
  *
@@ -136,7 +189,7 @@ RftError rft_put(struct RaftDb *db,
 
 #if defined(RAFT_DB_FFI)
 /**
- * Look up a key.
+ * Look up a key on the raw engine.
  *
  * On success, writes the value into the caller-provided buffer at
  * `out_value` and sets `*out_len` to the number of bytes written.
@@ -164,7 +217,7 @@ RftError rft_get(struct RaftDb *db,
 
 #if defined(RAFT_DB_FFI)
 /**
- * Delete a key.
+ * Delete a key on the raw engine.
  *
  * Returns [`RftError::Ok`] on success. Deleting a non-existent key is
  * not an error (it writes a tombstone).
@@ -175,6 +228,317 @@ RftError rft_get(struct RaftDb *db,
  * - `key` must point to at least `key_len` readable bytes.
  */
 rft_ RftError rft_delete(struct RaftDb *db, const uint8_t *key, uintptr_t key_len);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Insert or update a document in `collection`. The document's `id` field
+ * is honoured. The same id always maps to the same slot — repeated puts
+ * overwrite (and bump the internal version).
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle returned by [`rft_open`](super::rft_open).
+ * - `collection` must be a valid null-terminated UTF-8 C string.
+ * - `doc_json` must be a valid UTF-8 buffer of `doc_json_len` bytes.
+ */
+rft_
+RftError rft_collection_put(struct RaftDb *db,
+                            const char *collection,
+                            const uint8_t *doc_json,
+                            uintptr_t doc_json_len);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Insert a document, letting the database assign a fresh id. Writes the
+ * assigned id to `*out_doc_id` on success.
+ *
+ * # Safety
+ *
+ * - All non-null pointers must point to valid memory of the appropriate
+ *   size; `out_doc_id` must be a writable `*mut u64`.
+ */
+rft_
+RftError rft_collection_put_auto(struct RaftDb *db,
+                                 const char *collection,
+                                 const uint8_t *doc_json,
+                                 uintptr_t doc_json_len,
+                                 uint64_t *out_doc_id);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Fetch a document by id, writing its JSON encoding to `out_buf`. On
+ * `BufferTooSmall` the required size is written to `*out_len` and no
+ * bytes are copied.
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle.
+ * - `collection` must be a valid null-terminated UTF-8 C string.
+ * - `out_buf` must be writable for `*out_len` bytes, or null to query
+ *   the required size.
+ * - `out_len` must be a valid `*mut usize`.
+ */
+rft_
+RftError rft_collection_get(struct RaftDb *db,
+                            const char *collection,
+                            uint64_t doc_id,
+                            uint8_t *out_buf,
+                            uintptr_t *out_len);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Delete a document. Returns [`RftError::Ok`] whether the document
+ * existed or not.
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle.
+ * - `collection` must be a valid null-terminated UTF-8 C string.
+ */
+rft_ RftError rft_collection_delete(struct RaftDb *db, const char *collection, uint64_t doc_id);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Number of documents in `collection`. Writes the count to `*out_count`.
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle.
+ * - `collection` must be a valid null-terminated UTF-8 C string.
+ * - `out_count` must be a valid `*mut usize`.
+ */
+rft_ RftError rft_collection_count(struct RaftDb *db, const char *collection, uintptr_t *out_count);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * List all document ids in `collection`, sorted ascending.
+ *
+ * Writes up to `*out_len` ids into `out_ids` and sets `*out_len` to
+ * the number written. If `out_ids` is null or `*out_len` is smaller
+ * than the total count, returns [`RftError::BufferTooSmall`] and
+ * `*out_len` holds the required size.
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle.
+ * - `collection` must be a valid null-terminated UTF-8 C string.
+ * - `out_ids` must be writable for `*out_len * 8` bytes, or null.
+ * - `out_len` must be a valid `*mut usize`.
+ */
+rft_
+RftError rft_collection_list_ids(struct RaftDb *db,
+                                 const char *collection,
+                                 uint64_t *out_ids,
+                                 uintptr_t *out_len);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Register an observer callback for `collection`. The callback fires
+ * whenever a document in that collection is inserted, updated, or
+ * deleted.
+ *
+ * Returns a non-zero subscription id via `out_sub_id` on success. Pass
+ * it to [`rft_unobserve`] to cancel the subscription.
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle.
+ * - `collection` must be a valid null-terminated UTF-8 C string.
+ * - `callback` must be a valid C function pointer that remains valid
+ *   until [`rft_unobserve`] returns.
+ * - `user_data` is opaque to Rust; the platform binding is responsible
+ *   for managing its lifetime so it remains valid for the subscription.
+ * - `out_sub_id` must be a valid `*mut u64`.
+ */
+rft_
+RftError rft_observe(struct RaftDb *db,
+                     const char *collection,
+                     RftObserveCallback callback,
+                     void *user_data,
+                     uint64_t *out_sub_id);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Cancel a subscription previously created by [`rft_observe`]. Aborts
+ * the background task and removes it from the registry. Calling this
+ * with an unknown id returns [`RftError::UnknownSubscription`].
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle.
+ */
+rft_ RftError rft_unobserve(struct RaftDb *db, uint64_t sub_id);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Execute a query and return an opaque result handle. Caller must free
+ * it with [`rft_query_result_free`].
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle.
+ * - `query_json` must be a valid UTF-8 buffer of `query_json_len` bytes.
+ * - `out_result` must be a valid `*mut *mut RaftQueryResult`.
+ */
+rft_
+RftError rft_query_execute(struct RaftDb *db,
+                           const uint8_t *query_json,
+                           uintptr_t query_json_len,
+                           struct RaftQueryResult **out_result);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Number of documents in a query result. Returns 0 for null handles.
+ *
+ * # Safety
+ *
+ * - `result` must be a handle returned by [`rft_query_execute`], or null.
+ */
+rft_ uintptr_t rft_query_result_count(const struct RaftQueryResult *result);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Fetch the JSON encoding of the document at `index` in the result set.
+ * On `BufferTooSmall` the required size is written to `*out_len`.
+ *
+ * # Safety
+ *
+ * - `result` must be a handle returned by [`rft_query_execute`].
+ * - `out_buf` must be writable for `*out_len` bytes, or null to query
+ *   the required size.
+ * - `out_len` must be a valid `*mut usize`.
+ */
+rft_
+RftError rft_query_result_get(const struct RaftQueryResult *result,
+                              uintptr_t index,
+                              uint8_t *out_buf,
+                              uintptr_t *out_len);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Free a query result handle. Safe to call with null (no-op).
+ *
+ * # Safety
+ *
+ * - `result` must be a handle returned by [`rft_query_execute`], or null.
+ * - After this call, `result` is dangling and must not be reused.
+ */
+rft_ void rft_query_result_free(struct RaftQueryResult *result);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Begin a new transaction. The caller takes ownership of the returned
+ * handle and must end it with `commit` or `rollback`.
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle.
+ * - `out_txn` must be a valid `*mut *mut RaftTransaction`.
+ */
+rft_ RftError rft_transaction_begin(struct RaftDb *db, struct RaftTransaction **out_txn);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Read a document inside the transaction. The version is recorded for
+ * conflict detection at commit time. JSON encoding is written to
+ * `out_buf` using the same buffer-too-small protocol as
+ * `rft_collection_get`.
+ *
+ * Returns [`RftError::NotFound`] when the doc does not exist (the read
+ * is still tracked, so insertion of the doc by another writer before
+ * commit will be detected as a conflict).
+ *
+ * # Safety
+ *
+ * - `txn` must be a valid handle returned by
+ *   [`rft_transaction_begin`] and not yet committed/rolled back.
+ * - Other arguments follow the standard FFI contract.
+ */
+rft_
+RftError rft_transaction_get(struct RaftTransaction *txn,
+                             const char *collection,
+                             uint64_t doc_id,
+                             uint8_t *out_buf,
+                             uintptr_t *out_len);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Buffer a write inside the transaction. Applied atomically on commit.
+ *
+ * # Safety
+ *
+ * - `txn` must be a valid handle returned by
+ *   [`rft_transaction_begin`] and not yet finalised.
+ * - `doc_json` must be a valid UTF-8 buffer of `doc_json_len` bytes.
+ */
+rft_
+RftError rft_transaction_put(struct RaftTransaction *txn,
+                             const char *collection,
+                             const uint8_t *doc_json,
+                             uintptr_t doc_json_len);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Buffer a delete inside the transaction.
+ *
+ * # Safety
+ *
+ * - `txn` must be a valid, active handle.
+ * - `collection` must be a valid null-terminated UTF-8 C string.
+ */
+rft_
+RftError rft_transaction_delete(struct RaftTransaction *txn,
+                                const char *collection,
+                                uint64_t doc_id);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Validate the read set and atomically apply all buffered changes.
+ * Consumes the handle — it is freed regardless of outcome and must not
+ * be used again.
+ *
+ * Returns:
+ * - [`RftError::Ok`] on success.
+ * - [`RftError::TransactionConflict`] if a tracked doc was modified
+ *   concurrently. No writes are applied.
+ *
+ * # Safety
+ *
+ * - `txn` must be a valid, active handle. After this call, `txn` is
+ *   freed and dangling.
+ */
+rft_ RftError rft_transaction_commit(struct RaftTransaction *txn);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Discard the transaction without applying any buffered changes.
+ * Consumes the handle.
+ *
+ * # Safety
+ *
+ * - `txn` must be a valid handle returned by
+ *   [`rft_transaction_begin`], or null (no-op).
+ * - After this call, `txn` is freed and dangling.
+ */
+rft_ void rft_transaction_rollback(struct RaftTransaction *txn);
 #endif
 
 #ifdef __cplusplus

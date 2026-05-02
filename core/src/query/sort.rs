@@ -1,14 +1,16 @@
 //! Sort specification for query results.
 
+use serde::{Deserialize, Serialize};
+
 /// Sort direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SortDirection {
     Ascending,
     Descending,
 }
 
 /// Specifies how query results should be ordered.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sort {
     pub field: String,
     pub direction: SortDirection,

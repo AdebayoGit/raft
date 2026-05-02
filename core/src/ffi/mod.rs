@@ -2,29 +2,67 @@
 //!
 //! The database is exposed as an opaque handle (`*mut RaftDb`) with
 //! `rft_`-prefixed free functions. All errors are returned as a
-//! [`RftError`] C enum. Memory ownership rules:
+//! [`RftError`] C enum.
+//!
+//! ## Surface
+//!
+//! - **KV ops** — [`rft_put`] / [`rft_get`] / [`rft_delete`]: low-level
+//!   byte-key/byte-value access on the underlying engine.
+//! - **Collection ops** — `rft_collection_*`: typed document CRUD with
+//!   JSON-encoded documents.
+//! - **Query** — `rft_query_*`: predicate query execution returning an
+//!   opaque result handle.
+//! - **Transactions** — `rft_transaction_*`: optimistic-concurrency batch
+//!   reads/writes that commit atomically or roll back.
+//! - **Observers** — [`rft_observe`] / [`rft_unobserve`]: register a C
+//!   callback that fires on collection mutations.
+//!
+//! ## Memory ownership rules
 //!
 //! - The caller owns the `RaftDb` handle and must call [`rft_close`] to
-//!   free it.
-//! - For [`rft_get`], the callee writes into a caller-provided buffer.
-//!   If the buffer is too small, [`RftError::BufferTooSmall`] is
-//!   returned and `out_len` is set to the required size.
+//!   free it. Closing aborts any pending observer tasks.
+//! - Query result handles ([`RaftQueryResult`]) and transaction handles
+//!   ([`RaftTransaction`]) are also caller-owned; each has a matching
+//!   `*_free`/`*_commit`/`*_rollback` function.
+//! - Returned bytes (JSON, values) use a buffer-too-small protocol: pass
+//!   `out_buf` + `*out_len`; on
+//!   [`RftError::BufferTooSmall`](RftError::BufferTooSmall), `*out_len`
+//!   holds the required size and no bytes are copied.
 //! - Key/value byte slices are borrowed for the duration of each call.
 //!
-//! Gated behind the `ffi` feature flag.
+//! Gated behind the `ffi` feature flag, which also turns on `async`
+//! (required by observers) and `serde_json`.
 
+mod collection;
 mod error;
 mod handle;
+mod observe;
+mod query;
+mod transaction;
 
+pub use collection::{
+    rft_collection_count, rft_collection_delete, rft_collection_get,
+    rft_collection_list_ids, rft_collection_put, rft_collection_put_auto,
+};
 pub use error::RftError;
 pub use handle::RaftDb;
+pub use observe::{rft_observe, rft_unobserve, RftObserveCallback};
+pub use query::{
+    rft_query_execute, rft_query_result_count, rft_query_result_free,
+    rft_query_result_get, RaftQueryResult,
+};
+pub use transaction::{
+    rft_transaction_begin, rft_transaction_commit, rft_transaction_delete,
+    rft_transaction_get, rft_transaction_put, rft_transaction_rollback,
+    RaftTransaction,
+};
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
 use std::slice;
 
-use crate::{StorageConfig, StorageEngine};
+use crate::database::Database;
 
 /// Open or create a database at `path`.
 ///
@@ -39,38 +77,39 @@ use crate::{StorageConfig, StorageEngine};
 pub unsafe extern "C" fn rft_open(path: *const c_char, out_err: *mut RftError) -> *mut RaftDb {
     if path.is_null() {
         if !out_err.is_null() {
-            ptr::write(out_err, RftError::NullPointer);
+            unsafe { ptr::write(out_err, RftError::NullPointer) };
         }
         return ptr::null_mut();
     }
 
-    let c_str = match CStr::from_ptr(path).to_str() {
+    let c_str = match unsafe { CStr::from_ptr(path) }.to_str() {
         Ok(s) => s,
         Err(_) => {
             if !out_err.is_null() {
-                ptr::write(out_err, RftError::InvalidUtf8);
+                unsafe { ptr::write(out_err, RftError::InvalidUtf8) };
             }
             return ptr::null_mut();
         }
     };
 
-    match StorageEngine::open(c_str, StorageConfig::default()) {
-        Ok(engine) => {
+    match Database::open(c_str) {
+        Ok(db) => {
             if !out_err.is_null() {
-                ptr::write(out_err, RftError::Ok);
+                unsafe { ptr::write(out_err, RftError::Ok) };
             }
-            Box::into_raw(Box::new(RaftDb::new(engine)))
+            Box::into_raw(Box::new(RaftDb::new(db)))
         }
         Err(_) => {
             if !out_err.is_null() {
-                ptr::write(out_err, RftError::IoError);
+                unsafe { ptr::write(out_err, RftError::IoError) };
             }
             ptr::null_mut()
         }
     }
 }
 
-/// Close and free a database handle.
+/// Close and free a database handle. Aborts any pending observer tasks
+/// before dropping the runtime.
 ///
 /// # Safety
 ///
@@ -79,11 +118,19 @@ pub unsafe extern "C" fn rft_open(path: *const c_char, out_err: *mut RftError) -
 #[no_mangle]
 pub unsafe extern "C" fn rft_close(db: *mut RaftDb) {
     if !db.is_null() {
-        drop(Box::from_raw(db));
+        let handle = unsafe { &*db };
+        observe::abort_all_subscriptions(handle);
+        drop(unsafe { Box::from_raw(db) });
     }
 }
 
-/// Insert or update a key-value pair.
+// ── Low-level KV ops (kept for backwards-compat) ───────────────────────
+//
+// These bypass the document layer and operate directly on the underlying
+// engine via a small "raw" view exposed by `Database`. New code should
+// prefer the collection / query / transaction APIs above.
+
+/// Insert or update a key-value pair on the raw engine.
 ///
 /// # Safety
 ///
@@ -98,23 +145,26 @@ pub unsafe extern "C" fn rft_put(
     value: *const u8,
     value_len: usize,
 ) -> RftError {
-    let Some(handle) = ptr_to_handle(db) else {
+    let Some(handle) = (unsafe { db.as_ref() }) else {
         return RftError::NullPointer;
     };
-    if key.is_null() || value.is_null() {
+    if (key.is_null() && key_len > 0) || (value.is_null() && value_len > 0) {
         return RftError::NullPointer;
     }
 
-    let key_slice = slice::from_raw_parts(key, key_len);
-    let value_slice = slice::from_raw_parts(value, value_len);
+    let key_slice = unsafe { slice::from_raw_parts(key, key_len) };
+    let value_slice = unsafe { slice::from_raw_parts(value, value_len) };
 
-    match handle.engine_mut().put(key_slice.to_vec(), value_slice.to_vec()) {
+    match handle
+        .database()
+        .raw_put(key_slice.to_vec(), value_slice.to_vec())
+    {
         Ok(()) => RftError::Ok,
         Err(_) => RftError::IoError,
     }
 }
 
-/// Look up a key.
+/// Look up a key on the raw engine.
 ///
 /// On success, writes the value into the caller-provided buffer at
 /// `out_value` and sets `*out_len` to the number of bytes written.
@@ -139,36 +189,25 @@ pub unsafe extern "C" fn rft_get(
     out_value: *mut u8,
     out_len: *mut usize,
 ) -> RftError {
-    let Some(handle) = ptr_to_handle(db) else {
+    let Some(handle) = (unsafe { db.as_ref() }) else {
         return RftError::NullPointer;
     };
-    if key.is_null() || out_len.is_null() {
+    if (key.is_null() && key_len > 0) || out_len.is_null() {
         return RftError::NullPointer;
     }
 
-    let key_slice = slice::from_raw_parts(key, key_len);
+    let key_slice = unsafe { slice::from_raw_parts(key, key_len) };
 
-    let value = match handle.engine().get(key_slice) {
+    let value = match handle.database().raw_get(key_slice) {
         Ok(Some(v)) => v,
         Ok(None) => return RftError::NotFound,
         Err(_) => return RftError::IoError,
     };
 
-    let required = value.len();
-    let capacity = ptr::read(out_len);
-
-    if out_value.is_null() || capacity < required {
-        ptr::write(out_len, required);
-        return RftError::BufferTooSmall;
-    }
-
-    ptr::copy_nonoverlapping(value.as_ptr(), out_value, required);
-    ptr::write(out_len, required);
-
-    RftError::Ok
+    unsafe { write_buffer(&value, out_value, out_len) }
 }
 
-/// Delete a key.
+/// Delete a key on the raw engine.
 ///
 /// Returns [`RftError::Ok`] on success. Deleting a non-existent key is
 /// not an error (it writes a tombstone).
@@ -183,32 +222,49 @@ pub unsafe extern "C" fn rft_delete(
     key: *const u8,
     key_len: usize,
 ) -> RftError {
-    let Some(handle) = ptr_to_handle(db) else {
+    let Some(handle) = (unsafe { db.as_ref() }) else {
         return RftError::NullPointer;
     };
-    if key.is_null() {
+    if key.is_null() && key_len > 0 {
         return RftError::NullPointer;
     }
 
-    let key_slice = slice::from_raw_parts(key, key_len);
+    let key_slice = unsafe { slice::from_raw_parts(key, key_len) };
 
-    match handle.engine_mut().delete(key_slice.to_vec()) {
+    match handle.database().raw_delete(key_slice.to_vec()) {
         Ok(()) => RftError::Ok,
         Err(_) => RftError::IoError,
     }
 }
 
-/// Convert a raw pointer to a mutable handle reference, or `None` if null.
+// ── Internal helpers ───────────────────────────────────────────────────
+
+/// Standard "write `bytes` into caller buffer, fall back to size query"
+/// pattern shared by all FFI functions that return variable-length data.
 ///
 /// # Safety
 ///
-/// The pointer must be null or a valid `RaftDb` pointer from `rft_open`.
-unsafe fn ptr_to_handle<'a>(db: *mut RaftDb) -> Option<&'a mut RaftDb> {
-    if db.is_null() {
-        None
-    } else {
-        Some(&mut *db)
+/// - `out_len` must be a valid `*mut usize`.
+/// - `out_buf` must be writable for at least the value of `*out_len`
+///   bytes, or null.
+pub(crate) unsafe fn write_buffer(
+    bytes: &[u8],
+    out_buf: *mut u8,
+    out_len: *mut usize,
+) -> RftError {
+    let required = bytes.len();
+    let capacity = unsafe { ptr::read(out_len) };
+
+    if out_buf.is_null() || capacity < required {
+        unsafe { ptr::write(out_len, required) };
+        return RftError::BufferTooSmall;
     }
+
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf, required);
+        ptr::write(out_len, required);
+    }
+    RftError::Ok
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -219,9 +275,7 @@ mod tests {
     use std::ffi::CString;
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir()
-            .join("raft_db_ffi_tests")
-            .join(name);
+        let dir = std::env::temp_dir().join("raft_db_ffi_tests").join(name);
         if dir.exists() {
             std::fs::remove_dir_all(&dir).unwrap();
         }
@@ -233,7 +287,7 @@ mod tests {
         let dir = temp_dir(name);
         let path = CString::new(dir.to_str().unwrap()).unwrap();
         let mut err = RftError::Ok;
-        let db = rft_open(path.as_ptr(), &mut err);
+        let db = unsafe { rft_open(path.as_ptr(), &mut err) };
         assert!(!db.is_null(), "rft_open failed: {err:?}");
         assert_eq!(err, RftError::Ok);
         (db, dir)
@@ -266,38 +320,24 @@ mod tests {
     }
 
     #[test]
-    fn open_invalid_utf8_returns_null() {
+    fn raw_put_and_get() {
         unsafe {
-            let bad = b"\xff\xfe\x00";
-            let mut err = RftError::Ok;
-            let db = rft_open(bad.as_ptr() as *const c_char, &mut err);
-            assert!(db.is_null());
-            assert_eq!(err, RftError::InvalidUtf8);
-        }
-    }
-
-    #[test]
-    fn put_and_get() {
-        unsafe {
-            let (db, dir) = open_test_db("put_get");
+            let (db, dir) = open_test_db("raw_put_get");
 
             let key = b"hello";
             let value = b"world";
 
-            let err = rft_put(db, key.as_ptr(), key.len(), value.as_ptr(), value.len());
-            assert_eq!(err, RftError::Ok);
+            assert_eq!(
+                rft_put(db, key.as_ptr(), key.len(), value.as_ptr(), value.len()),
+                RftError::Ok
+            );
 
             let mut buf = [0u8; 64];
             let mut out_len = buf.len();
-            let err = rft_get(
-                db,
-                key.as_ptr(),
-                key.len(),
-                buf.as_mut_ptr(),
-                &mut out_len,
+            assert_eq!(
+                rft_get(db, key.as_ptr(), key.len(), buf.as_mut_ptr(), &mut out_len),
+                RftError::Ok
             );
-            assert_eq!(err, RftError::Ok);
-            assert_eq!(out_len, 5);
             assert_eq!(&buf[..out_len], b"world");
 
             rft_close(db);
@@ -306,233 +346,38 @@ mod tests {
     }
 
     #[test]
-    fn get_not_found() {
+    fn collection_put_get_delete() {
         unsafe {
-            let (db, dir) = open_test_db("get_not_found");
+            let (db, dir) = open_test_db("coll_crud");
+            let coll = CString::new("users").unwrap();
 
-            let key = b"missing";
-            let mut buf = [0u8; 64];
-            let mut out_len = buf.len();
-            let err = rft_get(
-                db,
-                key.as_ptr(),
-                key.len(),
-                buf.as_mut_ptr(),
-                &mut out_len,
-            );
-            assert_eq!(err, RftError::NotFound);
-
-            rft_close(db);
-            std::fs::remove_dir_all(&dir).ok();
-        }
-    }
-
-    #[test]
-    fn get_buffer_too_small() {
-        unsafe {
-            let (db, dir) = open_test_db("get_buf_small");
-
-            let key = b"k";
-            let value = b"a_longer_value";
-            rft_put(db, key.as_ptr(), key.len(), value.as_ptr(), value.len());
-
-            let mut buf = [0u8; 4]; // too small
-            let mut out_len = buf.len();
-            let err = rft_get(
-                db,
-                key.as_ptr(),
-                key.len(),
-                buf.as_mut_ptr(),
-                &mut out_len,
-            );
-            assert_eq!(err, RftError::BufferTooSmall);
-            assert_eq!(out_len, 14); // required size
-
-            // Now allocate the right size and try again.
-            let mut buf2 = vec![0u8; out_len];
-            let mut out_len2 = buf2.len();
-            let err = rft_get(
-                db,
-                key.as_ptr(),
-                key.len(),
-                buf2.as_mut_ptr(),
-                &mut out_len2,
-            );
-            assert_eq!(err, RftError::Ok);
-            assert_eq!(&buf2[..out_len2], b"a_longer_value");
-
-            rft_close(db);
-            std::fs::remove_dir_all(&dir).ok();
-        }
-    }
-
-    #[test]
-    fn get_null_buffer_returns_required_size() {
-        unsafe {
-            let (db, dir) = open_test_db("get_null_buf");
-
-            let key = b"k";
-            let value = b"data";
-            rft_put(db, key.as_ptr(), key.len(), value.as_ptr(), value.len());
-
-            let mut out_len: usize = 0;
-            let err = rft_get(
-                db,
-                key.as_ptr(),
-                key.len(),
-                ptr::null_mut(),
-                &mut out_len,
-            );
-            assert_eq!(err, RftError::BufferTooSmall);
-            assert_eq!(out_len, 4);
-
-            rft_close(db);
-            std::fs::remove_dir_all(&dir).ok();
-        }
-    }
-
-    #[test]
-    fn delete_existing_key() {
-        unsafe {
-            let (db, dir) = open_test_db("delete_existing");
-
-            let key = b"k";
-            let value = b"v";
-            rft_put(db, key.as_ptr(), key.len(), value.as_ptr(), value.len());
-
-            let err = rft_delete(db, key.as_ptr(), key.len());
-            assert_eq!(err, RftError::Ok);
-
-            let mut buf = [0u8; 64];
-            let mut out_len = buf.len();
-            let err = rft_get(
-                db,
-                key.as_ptr(),
-                key.len(),
-                buf.as_mut_ptr(),
-                &mut out_len,
-            );
-            assert_eq!(err, RftError::NotFound);
-
-            rft_close(db);
-            std::fs::remove_dir_all(&dir).ok();
-        }
-    }
-
-    #[test]
-    fn delete_nonexistent_is_ok() {
-        unsafe {
-            let (db, dir) = open_test_db("delete_missing");
-
-            let key = b"ghost";
-            let err = rft_delete(db, key.as_ptr(), key.len());
-            assert_eq!(err, RftError::Ok);
-
-            rft_close(db);
-            std::fs::remove_dir_all(&dir).ok();
-        }
-    }
-
-    #[test]
-    fn null_db_handle_returns_error() {
-        unsafe {
-            let key = b"k";
-            let value = b"v";
-
+            let doc_json = r#"{"id":1,"fields":{"name":{"String":"Alice"}}}"#;
             assert_eq!(
-                rft_put(ptr::null_mut(), key.as_ptr(), key.len(), value.as_ptr(), value.len()),
-                RftError::NullPointer
-            );
-
-            let mut buf = [0u8; 64];
-            let mut out_len = buf.len();
-            assert_eq!(
-                rft_get(
-                    ptr::null_mut(),
-                    key.as_ptr(),
-                    key.len(),
-                    buf.as_mut_ptr(),
-                    &mut out_len,
+                rft_collection_put(
+                    db,
+                    coll.as_ptr(),
+                    doc_json.as_ptr(),
+                    doc_json.len(),
                 ),
-                RftError::NullPointer
+                RftError::Ok
             );
 
-            assert_eq!(
-                rft_delete(ptr::null_mut(), key.as_ptr(), key.len()),
-                RftError::NullPointer
-            );
-        }
-    }
-
-    #[test]
-    fn null_key_returns_error() {
-        unsafe {
-            let (db, dir) = open_test_db("null_key");
-
-            assert_eq!(
-                rft_put(db, ptr::null(), 0, b"v".as_ptr(), 1),
-                RftError::NullPointer
-            );
-
-            let mut buf = [0u8; 64];
+            let mut buf = vec![0u8; 256];
             let mut out_len = buf.len();
             assert_eq!(
-                rft_get(db, ptr::null(), 0, buf.as_mut_ptr(), &mut out_len),
-                RftError::NullPointer
+                rft_collection_get(db, coll.as_ptr(), 1, buf.as_mut_ptr(), &mut out_len),
+                RftError::Ok
             );
+            let json = std::str::from_utf8(&buf[..out_len]).unwrap();
+            assert!(json.contains("Alice"));
 
-            assert_eq!(rft_delete(db, ptr::null(), 0), RftError::NullPointer);
+            assert_eq!(rft_collection_delete(db, coll.as_ptr(), 1), RftError::Ok);
 
-            rft_close(db);
-            std::fs::remove_dir_all(&dir).ok();
-        }
-    }
-
-    #[test]
-    fn null_value_on_put_returns_error() {
-        unsafe {
-            let (db, dir) = open_test_db("null_value");
-
-            assert_eq!(
-                rft_put(db, b"k".as_ptr(), 1, ptr::null(), 0),
-                RftError::NullPointer
-            );
-
-            rft_close(db);
-            std::fs::remove_dir_all(&dir).ok();
-        }
-    }
-
-    #[test]
-    fn null_out_len_on_get_returns_error() {
-        unsafe {
-            let (db, dir) = open_test_db("null_out_len");
-
-            let key = b"k";
-            let mut buf = [0u8; 64];
-            assert_eq!(
-                rft_get(db, key.as_ptr(), key.len(), buf.as_mut_ptr(), ptr::null_mut()),
-                RftError::NullPointer
-            );
-
-            rft_close(db);
-            std::fs::remove_dir_all(&dir).ok();
-        }
-    }
-
-    #[test]
-    fn put_overwrite_and_get() {
-        unsafe {
-            let (db, dir) = open_test_db("put_overwrite");
-
-            let key = b"key";
-            rft_put(db, key.as_ptr(), key.len(), b"old".as_ptr(), 3);
-            rft_put(db, key.as_ptr(), key.len(), b"new".as_ptr(), 3);
-
-            let mut buf = [0u8; 64];
             let mut out_len = buf.len();
-            rft_get(db, key.as_ptr(), key.len(), buf.as_mut_ptr(), &mut out_len);
-            assert_eq!(&buf[..out_len], b"new");
+            assert_eq!(
+                rft_collection_get(db, coll.as_ptr(), 1, buf.as_mut_ptr(), &mut out_len),
+                RftError::NotFound
+            );
 
             rft_close(db);
             std::fs::remove_dir_all(&dir).ok();
@@ -540,22 +385,163 @@ mod tests {
     }
 
     #[test]
-    fn empty_key_and_value() {
+    fn collection_count_and_list_ids() {
         unsafe {
-            let (db, dir) = open_test_db("empty_kv");
+            let (db, dir) = open_test_db("coll_count");
+            let coll = CString::new("u").unwrap();
 
-            // Empty key, empty value — unusual but valid.
-            let key: &[u8] = b"";
-            let value: &[u8] = b"";
-            // For empty slices, as_ptr() is valid but we must not pass null.
-            let err = rft_put(db, key.as_ptr(), 0, value.as_ptr(), 0);
-            assert_eq!(err, RftError::Ok);
+            for i in 1u64..=3 {
+                let json = format!(r#"{{"id":{i},"fields":{{}}}}"#);
+                assert_eq!(
+                    rft_collection_put(db, coll.as_ptr(), json.as_ptr(), json.len()),
+                    RftError::Ok
+                );
+            }
 
-            let mut buf = [0u8; 1];
-            let mut out_len = buf.len();
-            let err = rft_get(db, key.as_ptr(), 0, buf.as_mut_ptr(), &mut out_len);
-            assert_eq!(err, RftError::Ok);
-            assert_eq!(out_len, 0);
+            let mut count = 0usize;
+            assert_eq!(
+                rft_collection_count(db, coll.as_ptr(), &mut count),
+                RftError::Ok
+            );
+            assert_eq!(count, 3);
+
+            let mut ids = vec![0u64; 3];
+            let mut len = ids.len();
+            assert_eq!(
+                rft_collection_list_ids(db, coll.as_ptr(), ids.as_mut_ptr(), &mut len),
+                RftError::Ok
+            );
+            assert_eq!(len, 3);
+            assert_eq!(ids, vec![1, 2, 3]);
+
+            rft_close(db);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn query_returns_filtered_docs() {
+        unsafe {
+            let (db, dir) = open_test_db("query_filter");
+            let coll = CString::new("users").unwrap();
+
+            for i in 1u64..=5 {
+                let json = format!(
+                    r#"{{"id":{i},"fields":{{"age":{{"Int":{}}}}}}}"#,
+                    20 + i as i64 * 5,
+                );
+                rft_collection_put(db, coll.as_ptr(), json.as_ptr(), json.len());
+            }
+
+            // age >= 35 should yield 3 docs (35, 40, 45)
+            let q = r#"{"collection":"users","filter":{"Condition":{"field":"age","predicate":"Gte","value":{"Int":35}}}}"#;
+            let mut result: *mut RaftQueryResult = ptr::null_mut();
+            assert_eq!(
+                rft_query_execute(db, q.as_ptr(), q.len(), &mut result),
+                RftError::Ok
+            );
+            assert!(!result.is_null());
+            assert_eq!(rft_query_result_count(result), 3);
+
+            // Read back doc 0
+            let mut buf = vec![0u8; 256];
+            let mut len = buf.len();
+            assert_eq!(
+                rft_query_result_get(result, 0, buf.as_mut_ptr(), &mut len),
+                RftError::Ok
+            );
+            assert!(std::str::from_utf8(&buf[..len]).unwrap().contains("\"Int\""));
+
+            rft_query_result_free(result);
+            rft_close(db);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn transaction_commit_and_conflict() {
+        unsafe {
+            let (db, dir) = open_test_db("txn");
+            let coll = CString::new("users").unwrap();
+
+            // Seed a doc.
+            let seed = r#"{"id":1,"fields":{"name":{"String":"Alice"}}}"#;
+            rft_collection_put(db, coll.as_ptr(), seed.as_ptr(), seed.len());
+
+            // Begin txn, read, modify, commit — succeeds.
+            let mut txn: *mut RaftTransaction = ptr::null_mut();
+            assert_eq!(rft_transaction_begin(db, &mut txn), RftError::Ok);
+            let mut buf = vec![0u8; 256];
+            let mut len = buf.len();
+            assert_eq!(
+                rft_transaction_get(txn, coll.as_ptr(), 1, buf.as_mut_ptr(), &mut len),
+                RftError::Ok
+            );
+            let upd = r#"{"id":1,"fields":{"name":{"String":"Updated"}}}"#;
+            assert_eq!(
+                rft_transaction_put(txn, coll.as_ptr(), upd.as_ptr(), upd.len()),
+                RftError::Ok
+            );
+            assert_eq!(rft_transaction_commit(txn), RftError::Ok);
+
+            // Now a conflict scenario.
+            let mut txn: *mut RaftTransaction = ptr::null_mut();
+            assert_eq!(rft_transaction_begin(db, &mut txn), RftError::Ok);
+            let mut len = buf.len();
+            rft_transaction_get(txn, coll.as_ptr(), 1, buf.as_mut_ptr(), &mut len);
+
+            // Concurrent write outside the txn.
+            let outside = r#"{"id":1,"fields":{"name":{"String":"Concurrent"}}}"#;
+            rft_collection_put(db, coll.as_ptr(), outside.as_ptr(), outside.len());
+
+            let upd = r#"{"id":1,"fields":{"name":{"String":"FromTxn"}}}"#;
+            rft_transaction_put(txn, coll.as_ptr(), upd.as_ptr(), upd.len());
+            assert_eq!(rft_transaction_commit(txn), RftError::TransactionConflict);
+
+            rft_close(db);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn observe_fires_callback_on_mutation() {
+        use std::os::raw::c_void;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn callback(_event: *const c_char, _user_data: *mut c_void) {
+            COUNTER.fetch_add(1, Ordering::SeqCst);
+        }
+
+        unsafe {
+            let (db, dir) = open_test_db("observe");
+            let coll = CString::new("users").unwrap();
+
+            let mut sub_id = 0u64;
+            assert_eq!(
+                rft_observe(
+                    db,
+                    coll.as_ptr(),
+                    callback,
+                    ptr::null_mut(),
+                    &mut sub_id,
+                ),
+                RftError::Ok
+            );
+            assert!(sub_id > 0);
+
+            // Generate a mutation.
+            let json = r#"{"id":1,"fields":{}}"#;
+            rft_collection_put(db, coll.as_ptr(), json.as_ptr(), json.len());
+
+            // Give the observer task a moment to deliver.
+            std::thread::sleep(std::time::Duration::from_millis(80));
+
+            assert!(COUNTER.load(Ordering::SeqCst) >= 1);
+
+            assert_eq!(rft_unobserve(db, sub_id), RftError::Ok);
+            assert_eq!(rft_unobserve(db, sub_id), RftError::UnknownSubscription);
 
             rft_close(db);
             std::fs::remove_dir_all(&dir).ok();

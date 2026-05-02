@@ -1,9 +1,11 @@
 //! Mutation events emitted by the pub/sub bus.
 
+use serde::{Deserialize, Serialize};
+
 use crate::index::DocId;
 
 /// The kind of mutation that occurred.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MutationType {
     /// A new document was inserted.
     Insert,
@@ -14,7 +16,7 @@ pub enum MutationType {
 }
 
 /// Whether a mutation originated locally or from a remote sync.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum MutationOrigin {
     /// The mutation was performed by the local device.
     #[default]
@@ -24,7 +26,7 @@ pub enum MutationOrigin {
 }
 
 /// A single mutation event broadcast to subscribers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MutationEvent {
     /// The collection that was mutated.
     pub collection: String,

@@ -19,5 +19,5 @@ mod store;
 mod txn;
 
 pub use error::TransactionError;
-pub use store::{MemVersionedStore, VersionedStore};
+pub use store::{MemVersionedStore, VersionedDocument, VersionedStore};
 pub use txn::Transaction;

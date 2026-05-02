@@ -240,6 +240,7 @@ mod tests {
                 collection: "test".into(),
                 doc_id: DocId(0),
                 mutation_type: mt,
+                origin: crate::reactive::MutationOrigin::Local,
             });
         }
 

@@ -1,9 +1,11 @@
 //! Filter predicates — typed, composable, no SQL strings.
 
+use serde::{Deserialize, Serialize};
+
 use super::document::Value;
 
 /// A comparison operator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Predicate {
     Eq,
     Lt,
@@ -14,7 +16,7 @@ pub enum Predicate {
 }
 
 /// A single filter condition on one field.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FilterCondition {
     pub field: String,
     pub predicate: Predicate,
@@ -23,7 +25,7 @@ pub struct FilterCondition {
 
 /// A composable filter that can be a single condition or a boolean
 /// combination of conditions.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Filter {
     Condition(FilterCondition),
     And(Vec<Filter>),

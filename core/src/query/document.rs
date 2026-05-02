@@ -6,13 +6,15 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::index::DocId;
 
 /// A dynamically-typed field value.
 ///
 /// Kept intentionally simple — richer types (e.g. nested documents) can be
 /// added later without breaking the query interface.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     String(String),
     Int(i64),
@@ -65,7 +67,7 @@ impl PartialOrd for Value {
 }
 
 /// A document: a unique ID plus a map of field names to values.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Document {
     pub id: DocId,
     pub fields: HashMap<String, Value>,

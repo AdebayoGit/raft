@@ -1,5 +1,7 @@
 pub mod compaction;
 pub mod crdt;
+#[cfg(feature = "ffi")]
+pub mod database;
 mod engine;
 #[cfg(feature = "ffi")]
 pub mod ffi;
@@ -15,4 +17,6 @@ pub mod sync;
 pub mod transaction;
 pub mod wal;
 
+#[cfg(feature = "ffi")]
+pub use database::{Database, DatabaseError, DbTransaction};
 pub use engine::{StorageConfig, StorageEngine, StorageError};
