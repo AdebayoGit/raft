@@ -125,7 +125,10 @@ class HybridRaft : HybridRaftSpec() {
     }
 
     private fun notifyObservers(key: String, value: String?) {
-        for ((_, entry) in observers) {
+        // Snapshot the values so a callback that re-enters watch /
+        // unwatch can't mutate the map while we iterate.
+        val snapshot = observers.values.toList()
+        for (entry in snapshot) {
             if (key.startsWith(entry.query)) {
                 entry.callback(QueryResult(key, value))
             }

@@ -171,15 +171,19 @@ class HybridRaft: HybridRaftSpec {
         return keyData.withUnsafeBytes { keyBuf -> String? in
             let keyPtr = keyBuf.baseAddress!.assumingMemoryBound(to: UInt8.self)
 
-            // Phase 1: query required size
+            // Phase 1: query required size by passing a null buffer.
+            // RftError codes: OK = 0, NOT_FOUND = 4, BUFFER_TOO_SMALL = 5.
             var neededLen = 0
             let sizeCode = rft_get(h, keyPtr, keyData.count, nil, &neededLen)
-            // NOT_FOUND = 4
             guard sizeCode != 4 else { return nil }
-            // BUFFER_TOO_SMALL = 5 or OK = 0
-            guard sizeCode == 5 || sizeCode == 0, neededLen > 0 else { return nil }
+            guard sizeCode == 5 || sizeCode == 0 else { return nil }
 
-            // Phase 2: read into buffer
+            // Empty stored value — present but zero bytes. Match the
+            // Kotlin binding which returns "" for the same case rather
+            // than confusing it with key-not-found.
+            if neededLen == 0 { return "" }
+
+            // Phase 2: read into an exact-size buffer.
             var buf = Data(count: neededLen)
             var readLen = neededLen
             let readCode = buf.withUnsafeMutableBytes { bufPtr in
