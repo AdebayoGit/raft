@@ -224,15 +224,37 @@ impl Database {
     /// always uses a full scan — secondary index integration is on the
     /// roadmap, but the executor still applies filters/sort/limit/offset.
     pub fn query(&self, query: &Query) -> Vec<Document> {
-        let collections = self.inner.collections.read().expect("collections poisoned");
-        let view = CollectionView {
-            state: collections.get(query.collection_name()),
-        };
-        let plan = QueryPlanner::plan(query, &[], view.count());
-        let hash = HashMap::new();
-        let btree = HashMap::new();
-        let idx_set = IndexSet { hash: &hash, btree: &btree };
-        QueryExecutor::execute(query, &plan, &view, &idx_set)
+        execute_query(&self.inner, query)
+    }
+
+    /// Subscribe to a live query. Returns the current snapshot of
+    /// matching documents alongside a [`LiveQuery`] that emits a
+    /// [`QueryDiff`] each time a mutation in the queried collection
+    /// changes the result set.
+    ///
+    /// The bus subscription happens **before** the initial snapshot is
+    /// captured, so no event is lost in the window between the two.
+    /// Callers should treat the returned `Vec<Document>` as the
+    /// "current state" and the diffs as deltas applied on top.
+    #[cfg(feature = "async")]
+    pub fn live_query(
+        &self,
+        query: Query,
+    ) -> (Vec<Document>, crate::reactive::LiveQuery<DatabaseQueryRunner>) {
+        // Subscribe first so any mutation between now and the snapshot
+        // is buffered on the receiver.
+        let receiver = self.inner.bus.subscribe();
+        let initial = execute_query(&self.inner, &query);
+        let runner = Arc::new(DatabaseQueryRunner {
+            inner: Arc::clone(&self.inner),
+        });
+        let live = crate::reactive::LiveQuery::from_receiver(
+            query,
+            runner,
+            receiver,
+            initial.clone(),
+        );
+        (initial, live)
     }
 
     // ── Transaction ─────────────────────────────────────────────────────
@@ -332,6 +354,38 @@ impl DocumentStore for CollectionView<'_> {
 
     fn count(&self) -> usize {
         self.state.map(|s| s.docs.len()).unwrap_or(0)
+    }
+}
+
+/// Shared query execution against the in-memory collection state.
+/// Used by both [`Database::query`] and [`DatabaseQueryRunner`].
+fn execute_query(inner: &DatabaseInner, query: &Query) -> Vec<Document> {
+    let collections = inner.collections.read().expect("collections poisoned");
+    let view = CollectionView {
+        state: collections.get(query.collection_name()),
+    };
+    let plan = QueryPlanner::plan(query, &[], view.count());
+    let hash = HashMap::new();
+    let btree = HashMap::new();
+    let idx_set = IndexSet { hash: &hash, btree: &btree };
+    QueryExecutor::execute(query, &plan, &view, &idx_set)
+}
+
+// ── Live query runner ──────────────────────────────────────────────────
+
+/// Adapter that lets [`crate::reactive::LiveQuery`] re-execute predicate
+/// queries against a [`Database`]. Holds an `Arc<DatabaseInner>` so the
+/// runner survives independently of the `Database` handle that spawned
+/// the live query.
+#[cfg(feature = "async")]
+pub struct DatabaseQueryRunner {
+    inner: Arc<DatabaseInner>,
+}
+
+#[cfg(feature = "async")]
+impl crate::reactive::QueryRunner for DatabaseQueryRunner {
+    fn execute(&self, query: &Query) -> Vec<Document> {
+        execute_query(&self.inner, query)
     }
 }
 

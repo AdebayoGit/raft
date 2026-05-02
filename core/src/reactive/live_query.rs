@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::index::DocId;
@@ -17,7 +18,7 @@ use crate::query::{Document, Query};
 use super::event::MutationEvent;
 
 /// The diff between two consecutive query result sets.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryDiff {
     /// Documents present in the new results but absent from the old.
     pub added: Vec<Document>,
@@ -59,6 +60,12 @@ impl<R: QueryRunner> LiveQuery<R> {
     ///
     /// `runner` is called to re-evaluate the query whenever a relevant
     /// mutation arrives. `bus` is the event bus to subscribe to.
+    ///
+    /// The first call to [`next_diff`](Self::next_diff) lazily bootstraps
+    /// the previous result set. If you need the bootstrap to happen
+    /// before any task scheduling (to avoid races where a mutation
+    /// arrives before the bootstrap captures state), use
+    /// [`with_initial`](Self::with_initial).
     pub fn new(query: Query, runner: Arc<R>, bus: &super::EventBus) -> Self {
         let receiver = bus.subscribe();
         Self {
@@ -66,6 +73,30 @@ impl<R: QueryRunner> LiveQuery<R> {
             runner,
             receiver,
             previous: None,
+        }
+    }
+
+    /// Create a live query from an already-subscribed receiver and a
+    /// pre-computed initial snapshot.
+    ///
+    /// The caller is responsible for the correct ordering: subscribe to
+    /// the bus *first*, then capture `initial` via the runner. Any
+    /// mutation that happens between the subscribe and the snapshot is
+    /// buffered on the receiver and delivered as the first diff —
+    /// the snapshot may include or exclude that mutation depending on
+    /// whether the read happened before or after the write, but no
+    /// event is ever lost.
+    pub fn from_receiver(
+        query: Query,
+        runner: Arc<R>,
+        receiver: broadcast::Receiver<MutationEvent>,
+        initial: Vec<Document>,
+    ) -> Self {
+        Self {
+            query,
+            runner,
+            receiver,
+            previous: Some(index_by_id(initial)),
         }
     }
 

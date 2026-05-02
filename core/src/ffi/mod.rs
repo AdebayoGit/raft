@@ -46,7 +46,7 @@ pub use collection::{
 };
 pub use error::RftError;
 pub use handle::RaftDb;
-pub use observe::{rft_observe, rft_unobserve, RftObserveCallback};
+pub use observe::{rft_observe, rft_observe_query, rft_unobserve, RftObserveCallback};
 pub use query::{
     rft_query_execute, rft_query_result_count, rft_query_result_free,
     rft_query_result_get, RaftQueryResult,
@@ -543,6 +543,87 @@ mod tests {
             assert_eq!(rft_unobserve(db, sub_id), RftError::Ok);
             assert_eq!(rft_unobserve(db, sub_id), RftError::UnknownSubscription);
 
+            rft_close(db);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn observe_query_initial_snapshot_then_diffs() {
+        use std::os::raw::c_void;
+        use std::sync::Mutex;
+
+        struct CapturedDiffs(Mutex<Vec<String>>);
+        static DIFFS: std::sync::OnceLock<CapturedDiffs> = std::sync::OnceLock::new();
+
+        fn diffs() -> &'static CapturedDiffs {
+            DIFFS.get_or_init(|| CapturedDiffs(Mutex::new(Vec::new())))
+        }
+
+        unsafe extern "C" fn callback(json: *const c_char, _user_data: *mut c_void) {
+            let s = unsafe { std::ffi::CStr::from_ptr(json) }
+                .to_str()
+                .unwrap()
+                .to_string();
+            diffs().0.lock().unwrap().push(s);
+        }
+
+        unsafe {
+            let (db, dir) = open_test_db("observe_query");
+            let coll = CString::new("users").unwrap();
+
+            // Seed two docs before subscribing.
+            for i in 1u64..=2 {
+                let doc = format!(r#"{{"id":{i},"fields":{{"age":{{"Int":{}}}}}}}"#, 20 + i as i64);
+                rft_collection_put(db, coll.as_ptr(), doc.as_ptr(), doc.len());
+            }
+
+            // Subscribe to a query that matches all users.
+            let q = r#"{"collection":"users"}"#;
+            let mut sub_id = 0u64;
+            assert_eq!(
+                rft_observe_query(
+                    db,
+                    q.as_ptr(),
+                    q.len(),
+                    callback,
+                    ptr::null_mut(),
+                    &mut sub_id,
+                ),
+                RftError::Ok
+            );
+
+            // Initial snapshot should arrive synchronously.
+            {
+                let captured = diffs().0.lock().unwrap();
+                assert_eq!(captured.len(), 1, "expected initial snapshot");
+                let snapshot = &captured[0];
+                assert!(
+                    snapshot.contains("\"added\""),
+                    "snapshot json should have added key: {snapshot}",
+                );
+                // Both seeded docs should be in the snapshot.
+                assert!(snapshot.matches("\"id\":").count() == 2);
+            }
+
+            // Mutation: add a third doc → triggers a diff with one added.
+            let doc3 = r#"{"id":3,"fields":{"age":{"Int":99}}}"#;
+            rft_collection_put(db, coll.as_ptr(), doc3.as_ptr(), doc3.len());
+            std::thread::sleep(std::time::Duration::from_millis(300));
+
+            {
+                let captured = diffs().0.lock().unwrap();
+                assert!(
+                    captured.len() >= 2,
+                    "expected diff after mutation; got {} entries: {:?}",
+                    captured.len(),
+                    *captured
+                );
+                let last = &captured[captured.len() - 1];
+                assert!(last.contains("\"id\":3"), "diff should include doc 3: {last}");
+            }
+
+            assert_eq!(rft_unobserve(db, sub_id), RftError::Ok);
             rft_close(db);
             std::fs::remove_dir_all(&dir).ok();
         }

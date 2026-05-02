@@ -69,6 +69,14 @@ impl From<QuerySpec> for Query {
     }
 }
 
+/// Parse a query JSON byte buffer into a [`Query`]. Used by both
+/// [`rft_query_execute`] and [`super::observe::rft_observe_query`].
+pub(super) fn query_from_json(bytes: &[u8]) -> Result<Query, ()> {
+    serde_json::from_slice::<QuerySpec>(bytes)
+        .map(Query::from)
+        .map_err(|_| ())
+}
+
 /// Execute a query and return an opaque result handle. Caller must free
 /// it with [`rft_query_result_free`].
 ///

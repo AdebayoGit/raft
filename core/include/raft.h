@@ -367,9 +367,46 @@ RftError rft_observe(struct RaftDb *db,
 
 #if defined(RAFT_DB_FFI)
 /**
- * Cancel a subscription previously created by [`rft_observe`]. Aborts
- * the background task and removes it from the registry. Calling this
- * with an unknown id returns [`RftError::UnknownSubscription`].
+ * Register a *live query* subscription for `query_json`. The callback
+ * fires immediately with an initial-snapshot diff (every matching
+ * document in `added`, others empty) and then again every time a
+ * mutation in the queried collection causes the result set to change.
+ *
+ * Each diff is delivered as JSON:
+ *
+ * ```json
+ * {
+ *   "added":   [<Document>, ...],
+ *   "removed": [<Document>, ...],
+ *   "updated": [<Document>, ...]
+ * }
+ * ```
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle.
+ * - `query_json` must be a valid UTF-8 buffer of `query_json_len` bytes.
+ * - `callback` must be a valid C function pointer that remains valid
+ *   until [`rft_unobserve`] returns.
+ * - `user_data` is opaque to Rust; the platform binding owns its
+ *   lifetime and must keep it valid for the subscription.
+ * - `out_sub_id` must be a valid `*mut u64`.
+ */
+rft_
+RftError rft_observe_query(struct RaftDb *db,
+                           const uint8_t *query_json,
+                           uintptr_t query_json_len,
+                           RftObserveCallback callback,
+                           void *user_data,
+                           uint64_t *out_sub_id);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Cancel a subscription previously created by [`rft_observe`] or
+ * [`rft_observe_query`]. Aborts the background task and removes it
+ * from the registry. Calling this with an unknown id returns
+ * [`RftError::UnknownSubscription`].
  *
  * # Safety
  *

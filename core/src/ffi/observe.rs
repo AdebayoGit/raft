@@ -26,13 +26,18 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::ptr;
+use std::slice;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
 
+use crate::query::Query;
+use crate::reactive::QueryDiff;
+
 use super::error::RftError;
 use super::handle::RaftDb;
+use super::query::query_from_json;
 
 /// C-compatible callback signature.
 ///
@@ -157,9 +162,114 @@ pub unsafe extern "C" fn rft_observe(
     RftError::Ok
 }
 
-/// Cancel a subscription previously created by [`rft_observe`]. Aborts
-/// the background task and removes it from the registry. Calling this
-/// with an unknown id returns [`RftError::UnknownSubscription`].
+/// Register a *live query* subscription for `query_json`. The callback
+/// fires immediately with an initial-snapshot diff (every matching
+/// document in `added`, others empty) and then again every time a
+/// mutation in the queried collection causes the result set to change.
+///
+/// Each diff is delivered as JSON:
+///
+/// ```json
+/// {
+///   "added":   [<Document>, ...],
+///   "removed": [<Document>, ...],
+///   "updated": [<Document>, ...]
+/// }
+/// ```
+///
+/// # Safety
+///
+/// - `db` must be a valid handle.
+/// - `query_json` must be a valid UTF-8 buffer of `query_json_len` bytes.
+/// - `callback` must be a valid C function pointer that remains valid
+///   until [`rft_unobserve`] returns.
+/// - `user_data` is opaque to Rust; the platform binding owns its
+///   lifetime and must keep it valid for the subscription.
+/// - `out_sub_id` must be a valid `*mut u64`.
+#[no_mangle]
+pub unsafe extern "C" fn rft_observe_query(
+    db: *mut RaftDb,
+    query_json: *const u8,
+    query_json_len: usize,
+    callback: RftObserveCallback,
+    user_data: *mut c_void,
+    out_sub_id: *mut u64,
+) -> RftError {
+    let Some(handle) = (unsafe { db.as_ref() }) else {
+        return RftError::NullPointer;
+    };
+    if out_sub_id.is_null() || (query_json.is_null() && query_json_len > 0) {
+        return RftError::NullPointer;
+    }
+
+    let json = unsafe { slice::from_raw_parts(query_json, query_json_len) };
+    let query: Query = match query_from_json(json) {
+        Ok(q) => q,
+        Err(_) => return RftError::InvalidJson,
+    };
+
+    // Atomically (subscribe → snapshot) so we don't drop any mutations
+    // between the snapshot and the first diff.
+    let (initial, mut live) = handle.database().live_query(query);
+
+    // Emit the initial snapshot synchronously so callers always see the
+    // current state before the task starts. This matches the platform
+    // bindings' `observe(...)` semantics on Kotlin/Swift/Dart.
+    let snapshot = QueryDiff {
+        added: initial,
+        removed: Vec::new(),
+        updated: Vec::new(),
+    };
+    let wrapped_user_data = UserData::new(user_data);
+    if let Err(err) = fire_diff(&snapshot, callback, wrapped_user_data.as_ptr()) {
+        return err;
+    }
+
+    let join_handle = handle.runtime().spawn(async move {
+        while let Some(diff) = live.next_diff().await {
+            let _ = fire_diff(&diff, callback, wrapped_user_data.as_ptr());
+        }
+    });
+
+    let sub_id = {
+        let mut reg = handle.subscriptions.lock().expect("subscriptions poisoned");
+        reg.next_id += 1;
+        let id = reg.next_id;
+        reg.handles.insert(id, join_handle);
+        id
+    };
+
+    GLOBAL_OBSERVER_COUNT.fetch_add(1, Ordering::Relaxed);
+    unsafe { ptr::write(out_sub_id, sub_id) };
+    RftError::Ok
+}
+
+/// Encode `diff` as JSON and invoke `callback` with the resulting C string.
+///
+/// # Safety
+///
+/// - `callback` must remain valid for the duration of the call.
+/// - `user_data` is passed back unchanged to the callback.
+fn fire_diff(
+    diff: &QueryDiff,
+    callback: RftObserveCallback,
+    user_data: *mut c_void,
+) -> Result<(), RftError> {
+    let json = serde_json::to_string(diff).map_err(|_| RftError::InvalidJson)?;
+    let cstring = CString::new(json).map_err(|_| RftError::InvalidJson)?;
+    // SAFETY: caller of rft_observe_query promised the callback pointer
+    // remains valid for the subscription lifetime; user_data is opaque
+    // and managed by the caller.
+    unsafe {
+        callback(cstring.as_ptr(), user_data);
+    }
+    Ok(())
+}
+
+/// Cancel a subscription previously created by [`rft_observe`] or
+/// [`rft_observe_query`]. Aborts the background task and removes it
+/// from the registry. Calling this with an unknown id returns
+/// [`RftError::UnknownSubscription`].
 ///
 /// # Safety
 ///
