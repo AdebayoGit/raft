@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
+import 'raft_collection.dart';
 import 'raft_db_bindings.dart' as bindings;
 
 /// Loads the native RaftDB library for the current platform.
@@ -217,6 +218,24 @@ class RaftDb {
   }
 
   // ---------------------------------------------------------------------------
+
+  /// Create a typed [RaftCollection] backed by this database.
+  ///
+  /// Convenience factory equivalent to constructing a [RaftCollection]
+  /// directly. See [RaftCollection] for the full API and a usage example.
+  RaftCollection<T> collection<T>({
+    required String name,
+    required Uint8List Function(T document) serialize,
+    required T Function(Uint8List bytes) deserialize,
+  }) {
+    _assertOpen();
+    return RaftCollection<T>(
+      db: this,
+      name: name,
+      serialize: serialize,
+      deserialize: deserialize,
+    );
+  }
 
   void _assertOpen() {
     if (_closed) throw StateError('RaftDb has been closed');

@@ -95,9 +95,39 @@ All native errors are thrown as `RaftDbException` with a message and a numeric c
 | 8    | Invalid handle         |
 | 9    | Unknown subscription   |
 
+## Typed collections
+
+For structured data, use `RaftCollection<T>` instead of raw KV:
+
+```dart
+import 'dart:convert';
+import 'package:raft_db/raft_db.dart';
+
+class User {
+  User({required this.id, required this.name});
+  final String id;
+  final String name;
+  Map<String, dynamic> toJson() => {'id': id, 'name': name};
+  factory User.fromJson(Map<String, dynamic> j) =>
+      User(id: j['id'], name: j['name']);
+}
+
+final users = db.collection<User>(
+  name: 'users',
+  serialize: (u) => Uint8List.fromList(utf8.encode(jsonEncode(u.toJson()))),
+  deserialize: (b) => User.fromJson(jsonDecode(utf8.decode(b))),
+);
+
+await users.put('1', User(id: '1', name: 'Alice'));
+final alice = await users.get('1'); // User?
+await users.delete('1');
+```
+
+Keys are scoped under `<name>:<id>` so multiple collections coexist in one database without colliding.
+
 ## Roadmap
 
-The current Dart layer wraps the v0.1.0 KV surface. The richer document / query / transaction / observer FFI is exposed in the Rust core (see `core/include/raft.h`) and the Dart bindings are next on the queue.
+The current Dart layer wraps the v0.1.0 KV surface plus typed collections. The richer query / transaction / observer FFI is exposed in the Rust core (see `core/include/raft.h`) — wiring those into Dart is the next milestone.
 
 ## Example app
 

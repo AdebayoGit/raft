@@ -66,4 +66,68 @@ void main() {
     expect(() => closedDb.delete(key), throwsStateError);
     expect(() => closedDb.close(), throwsStateError);
   });
+
+  // ── RaftCollection ──────────────────────────────────────────────────
+
+  RaftCollection<Map<String, dynamic>> jsonCollection(String name) {
+    return db.collection<Map<String, dynamic>>(
+      name: name,
+      serialize: (doc) =>
+          Uint8List.fromList(utf8.encode(jsonEncode(doc))),
+      deserialize: (bytes) =>
+          jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>,
+    );
+  }
+
+  testWidgets('collection put and get round-trip', (tester) async {
+    final users = jsonCollection('users_rt');
+    await users.put('1', {'name': 'Alice', 'age': 30});
+    final loaded = await users.get('1');
+    expect(loaded, isNotNull);
+    expect(loaded!['name'], 'Alice');
+    expect(loaded['age'], 30);
+  });
+
+  testWidgets('collection get returns null for missing id', (tester) async {
+    final users = jsonCollection('users_missing');
+    final loaded = await users.get('does-not-exist');
+    expect(loaded, isNull);
+  });
+
+  testWidgets('collection delete removes document', (tester) async {
+    final users = jsonCollection('users_del');
+    await users.put('42', {'name': 'Bob'});
+    await users.delete('42');
+    expect(await users.get('42'), isNull);
+  });
+
+  testWidgets('collections with different names do not collide',
+      (tester) async {
+    final users = jsonCollection('coll_a');
+    final orders = jsonCollection('coll_b');
+    await users.put('1', {'name': 'Alice'});
+    await orders.put('1', {'item': 'Book'});
+
+    final u = await users.get('1');
+    final o = await orders.get('1');
+    expect(u!['name'], 'Alice');
+    expect(o!['item'], 'Book');
+  });
+
+  testWidgets('collection on closed db throws StateError', (tester) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final closedPath =
+        '${dir.path}${Platform.pathSeparator}raft_coll_closed';
+    final closedDb = await RaftDb.open(closedPath);
+    await closedDb.close();
+
+    expect(
+      () => closedDb.collection<Map<String, dynamic>>(
+        name: 'x',
+        serialize: (m) => Uint8List(0),
+        deserialize: (b) => <String, dynamic>{},
+      ),
+      throwsStateError,
+    );
+  });
 }
