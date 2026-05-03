@@ -1,0 +1,35 @@
+# cargo-deny configuration for raft-db.
+# Keeps the dependency graph honest before publishing.
+
+[graph]
+all-features = true
+
+[advisories]
+# Fail on any unpatched advisory in the dependency tree.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Permissive licenses we accept across the dependency graph. Add new
+# entries when `cargo deny check licenses` flags a dependency you trust;
+# refuse to add anything copyleft.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+]
+confidence-threshold = 0.85
+
+[bans]
+# Warn on duplicate versions of the same crate — they bloat the binary
+# but aren't always avoidable.
+multiple-versions = "warn"
+wildcards = "deny"
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
