@@ -30,13 +30,19 @@ class RaftDbException implements Exception {
   final String message;
   final int? code;
 
-  factory RaftDbException._fromCode(int code) {
+  factory RaftDbException.fromCode(int code) {
+    // Codes mirror `core/include/raft.h`. Keep this in sync when new
+    // RftError variants are added on the Rust side.
     final message = switch (code) {
       1 => 'Null pointer argument',
       2 => 'Invalid UTF-8 in path or key',
       3 => 'I/O or storage engine error',
       4 => 'Key not found',
       5 => 'Buffer too small',
+      6 => 'Invalid JSON in document or query',
+      7 => 'Transaction commit conflicted with a concurrent write',
+      8 => 'Native handle is invalid or already consumed',
+      9 => 'Subscription id is not registered',
       _ => 'Unknown error (code $code)',
     };
     return RaftDbException(message, code: code);
@@ -82,7 +88,7 @@ class RaftDb {
         final handle = db.rft_open(pathPtr.cast(), errPtr.cast());
         final code = errPtr.value;
         if (code != bindings.RftError.RFT_ERROR_OK.value) {
-          throw RaftDbException._fromCode(code);
+          throw RaftDbException.fromCode(code);
         }
         if (handle == ffi.nullptr) {
           throw const RaftDbException('rft_open returned null with OK status');
@@ -131,7 +137,7 @@ class RaftDb {
         final code =
             db.rft_put(handle, keyPtr, key.length, valPtr, value.length);
         if (code != bindings.RftError.RFT_ERROR_OK.value) {
-          throw RaftDbException._fromCode(code);
+          throw RaftDbException.fromCode(code);
         }
       } finally {
         malloc.free(keyPtr);
@@ -156,7 +162,7 @@ class RaftDb {
         keyPtr.asTypedList(key.length).setAll(0, key);
         final code = db.rft_delete(handle, keyPtr, key.length);
         if (code != bindings.RftError.RFT_ERROR_OK.value) {
-          throw RaftDbException._fromCode(code);
+          throw RaftDbException.fromCode(code);
         }
       } finally {
         malloc.free(keyPtr);
@@ -194,7 +200,7 @@ class RaftDb {
         }
         if (sizeCode != bindings.RftError.RFT_ERROR_BUFFER_TOO_SMALL.value &&
             sizeCode != bindings.RftError.RFT_ERROR_OK.value) {
-          throw RaftDbException._fromCode(sizeCode);
+          throw RaftDbException.fromCode(sizeCode);
         }
 
         // Phase 2: allocate exact buffer and read.
@@ -204,7 +210,7 @@ class RaftDb {
           final readCode =
               db.rft_get(handle, keyPtr, key.length, bufPtr, lenPtr);
           if (readCode != bindings.RftError.RFT_ERROR_OK.value) {
-            throw RaftDbException._fromCode(readCode);
+            throw RaftDbException.fromCode(readCode);
           }
           return Uint8List.fromList(bufPtr.asTypedList(lenPtr.value));
         } finally {

@@ -1,0 +1,31 @@
+{
+  "object" : {
+    "artifacts" : [
+      {
+        "kind" : {
+          "xcframework" : {
+
+          }
+        },
+        "packageRef" : {
+          "identity" : "swift",
+          "kind" : "root",
+          "location" : "/Users/Ekundayo/Projects/raft/swift",
+          "name" : "swift"
+        },
+        "path" : "/Users/Ekundayo/Projects/raft/swift/RaftDB.xcframework",
+        "source" : {
+          "type" : "local"
+        },
+        "targetName" : "CRaftDB"
+      }
+    ],
+    "dependencies" : [
+
+    ],
+    "prebuilts" : [
+
+    ]
+  },
+  "version" : 7
+}

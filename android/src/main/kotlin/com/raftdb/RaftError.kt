@@ -10,6 +10,10 @@ package com.raftdb
  * - 3 = IoError
  * - 4 = NotFound
  * - 5 = BufferTooSmall
+ * - 6 = InvalidJson
+ * - 7 = TransactionConflict
+ * - 8 = InvalidHandle
+ * - 9 = UnknownSubscription
  */
 sealed class RaftError(message: String) : Exception(message) {
 
@@ -28,6 +32,20 @@ sealed class RaftError(message: String) : Exception(message) {
     /** The caller-provided buffer is too small (code 5). */
     class BufferTooSmall : RaftError("The caller-provided buffer is too small")
 
+    /** A document or filter passed via JSON failed to parse (code 6). */
+    class InvalidJson : RaftError("A document or filter passed via JSON failed to parse")
+
+    /** A transaction commit failed because a tracked document was modified concurrently (code 7). */
+    class TransactionConflict : RaftError(
+        "Transaction commit conflicted with a concurrent write",
+    )
+
+    /** A handle (transaction, query result, subscription) is invalid (code 8). */
+    class InvalidHandle : RaftError("Native handle is invalid or already consumed")
+
+    /** A subscription id passed to unobserve is not registered (code 9). */
+    class UnknownSubscription : RaftError("Subscription id is not registered")
+
     /** An unknown error code was returned (defensive). */
     class Unknown(code: Int) : RaftError("Unknown raft error code: $code")
 
@@ -40,6 +58,10 @@ sealed class RaftError(message: String) : Exception(message) {
             3 -> IoError()
             4 -> NotFound()
             5 -> BufferTooSmall()
+            6 -> InvalidJson()
+            7 -> TransactionConflict()
+            8 -> InvalidHandle()
+            9 -> UnknownSubscription()
             else -> Unknown(code)
         }
 

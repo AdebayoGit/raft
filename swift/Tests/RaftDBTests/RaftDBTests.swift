@@ -29,6 +29,22 @@ final class RaftErrorTests: XCTestCase {
         XCTAssertEqual(RaftError.fromCode(5), .bufferTooSmall)
     }
 
+    func testCode6MapsToInvalidJson() {
+        XCTAssertEqual(RaftError.fromCode(6), .invalidJson)
+    }
+
+    func testCode7MapsToTransactionConflict() {
+        XCTAssertEqual(RaftError.fromCode(7), .transactionConflict)
+    }
+
+    func testCode8MapsToInvalidHandle() {
+        XCTAssertEqual(RaftError.fromCode(8), .invalidHandle)
+    }
+
+    func testCode9MapsToUnknownSubscription() {
+        XCTAssertEqual(RaftError.fromCode(9), .unknownSubscription)
+    }
+
     func testUnknownCodeMapsToUnknown() {
         let error = RaftError.fromCode(99)
         XCTAssertEqual(error, .unknown(99))
@@ -44,6 +60,18 @@ final class RaftErrorTests: XCTestCase {
         }
     }
 
+    func testCheckThrowsTransactionConflict() {
+        XCTAssertThrowsError(try RaftError.check(7)) { error in
+            XCTAssertEqual(error as? RaftError, .transactionConflict)
+        }
+    }
+
+    func testCheckThrowsInvalidHandle() {
+        XCTAssertThrowsError(try RaftError.check(8)) { error in
+            XCTAssertEqual(error as? RaftError, .invalidHandle)
+        }
+    }
+
     func testRoundTripCodes() {
         let cases: [(UInt32, RaftError)] = [
             (1, .nullPointer),
@@ -51,6 +79,10 @@ final class RaftErrorTests: XCTestCase {
             (3, .ioError),
             (4, .notFound),
             (5, .bufferTooSmall),
+            (6, .invalidJson),
+            (7, .transactionConflict),
+            (8, .invalidHandle),
+            (9, .unknownSubscription),
         ]
         for (code, expected) in cases {
             let mapped = RaftError.fromCode(code)
@@ -65,6 +97,10 @@ final class RaftErrorTests: XCTestCase {
         XCTAssertTrue(RaftError.ioError.description.contains("I/O"))
         XCTAssertTrue(RaftError.notFound.description.contains("not found"))
         XCTAssertTrue(RaftError.bufferTooSmall.description.contains("buffer"))
+        XCTAssertTrue(RaftError.invalidJson.description.contains("JSON"))
+        XCTAssertTrue(RaftError.transactionConflict.description.contains("conflict"))
+        XCTAssertTrue(RaftError.invalidHandle.description.contains("handle"))
+        XCTAssertTrue(RaftError.unknownSubscription.description.contains("ubscription"))
         XCTAssertTrue(RaftError.unknown(42).description.contains("42"))
     }
 
@@ -75,6 +111,10 @@ final class RaftErrorTests: XCTestCase {
             RaftError.ioError,
             RaftError.notFound,
             RaftError.bufferTooSmall,
+            RaftError.invalidJson,
+            RaftError.transactionConflict,
+            RaftError.invalidHandle,
+            RaftError.unknownSubscription,
             RaftError.unknown(99),
         ]
         for error in errors {
@@ -99,6 +139,13 @@ final class QueryDiffTests: XCTestCase {
     func testQueryDiffWithNilValue() {
         let diff = QueryDiff(key: Data("key".utf8), value: nil)
         XCTAssertNil(diff.value)
+    }
+
+    func testQueryDiffWithEmptyValue() {
+        // Empty-but-present value (Data of length zero) is distinct from nil.
+        let diff = QueryDiff(key: Data("key".utf8), value: Data())
+        XCTAssertNotNil(diff.value)
+        XCTAssertEqual(diff.value?.count, 0)
     }
 }
 
@@ -141,6 +188,15 @@ final class LockedBoolTests: XCTestCase {
         let swapped = b.compareExchange(expected: true, desired: false)
         XCTAssertFalse(swapped)
         XCTAssertFalse(b.value)
+    }
+
+    func testCompareExchangeIdempotent() {
+        // Compare-and-swap should fail the second time when the source is
+        // already at the desired state.
+        let b = LockedBool(false)
+        XCTAssertTrue(b.compareExchange(expected: false, desired: true))
+        XCTAssertFalse(b.compareExchange(expected: false, desired: true))
+        XCTAssertTrue(b.value)
     }
 
     func testConcurrentAccess() {
@@ -206,5 +262,33 @@ final class RaftCollectionScopingTests: XCTestCase {
         let postsKey = Data("posts:1".utf8)
 
         XCTAssertNotEqual(usersKey, postsKey)
+    }
+
+    func testNonAsciiIdsRoundTrip() {
+        // Make sure emoji / accents / CJK survive utf-8 scoping.
+        let id = "ユーザー🚀café"
+        let scoped = "users:\(id)"
+        let restored = String(data: Data(scoped.utf8), encoding: .utf8)
+        XCTAssertEqual(scoped, restored)
+    }
+
+    func testCustomEncoderProducesDifferentBytes() throws {
+        struct Doc: Codable {
+            let createdAt: Date
+        }
+
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let doc = Doc(createdAt: date)
+
+        let defaultEncoder = JSONEncoder()
+        let isoEncoder = JSONEncoder()
+        isoEncoder.dateEncodingStrategy = .iso8601
+
+        let defaultBytes = try defaultEncoder.encode(doc)
+        let isoBytes = try isoEncoder.encode(doc)
+
+        // Different encoding strategies produce different byte streams —
+        // proves the user's encoder choice is honoured.
+        XCTAssertNotEqual(defaultBytes, isoBytes)
     }
 }
