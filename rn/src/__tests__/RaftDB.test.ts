@@ -234,4 +234,117 @@ describe('RaftDB', () => {
       expect(db.isClosed).toBe(true)
     })
   })
+
+  // -- edge cases ----------------------------------------------------------
+
+  describe('edge cases', () => {
+    it('JSON payloads round-trip without mutation', async () => {
+      const db = RaftDB.open('/tmp/json.db')
+
+      const original = {
+        id: '1',
+        name: 'Alice',
+        tags: ['admin', 'beta'],
+        meta: { joined: '2024-01-01', flags: { newUi: true } },
+      }
+      await db.put('user:1', JSON.stringify(original))
+      const restored = JSON.parse((await db.get('user:1'))!)
+
+      expect(restored).toEqual(original)
+    })
+
+    it('empty-string values are stored and retrieved as ""', async () => {
+      const db = RaftDB.open('/tmp/empty.db')
+      await db.put('flag', '')
+      const val = await db.get('flag')
+      expect(val).toBe('')
+    })
+
+    it('overlapping prefixes do not collide on get', async () => {
+      const db = RaftDB.open('/tmp/prefix.db')
+      await db.put('user', 'plain')
+      await db.put('user:1', 'scoped')
+
+      expect(await db.get('user')).toBe('plain')
+      expect(await db.get('user:1')).toBe('scoped')
+    })
+
+    it('non-ascii keys and values round-trip', async () => {
+      const db = RaftDB.open('/tmp/utf8.db')
+      const key = 'ユーザー🚀café'
+      const value = '日本語 — éàü 🌍'
+      await db.put(key, value)
+      expect(await db.get(key)).toBe(value)
+    })
+
+    it('many concurrent puts settle without dropping writes', async () => {
+      const db = RaftDB.open('/tmp/concurrent.db')
+      const writes = Array.from({ length: 50 }, (_, i) =>
+        db.put(`k${i}`, `v${i}`)
+      )
+      await Promise.all(writes)
+
+      // Spot-check a few keys.
+      expect(await db.get('k0')).toBe('v0')
+      expect(await db.get('k25')).toBe('v25')
+      expect(await db.get('k49')).toBe('v49')
+      expect(mockCalls.put).toHaveBeenCalledTimes(50)
+    })
+  })
+
+  // -- close / re-open behaviour -------------------------------------------
+
+  describe('close behaviour', () => {
+    it('post-close get returns rejected promise (not silent null)', async () => {
+      const db = RaftDB.open('/tmp/post-close.db')
+      await db.put('k', 'v')
+      db.close()
+
+      await expect(db.get('k')).rejects.toThrow('closed')
+    })
+
+    it('post-close delete throws', async () => {
+      const db = RaftDB.open('/tmp/post-close-del.db')
+      db.close()
+      await expect(db.delete('k')).rejects.toThrow('closed')
+    })
+
+    it('isClosed reflects state across instances independently', () => {
+      const a = RaftDB.open('/tmp/a.db')
+      const b = RaftDB.open('/tmp/b.db')
+      a.close()
+      expect(a.isClosed).toBe(true)
+      expect(b.isClosed).toBe(false)
+      b.close()
+      expect(b.isClosed).toBe(true)
+    })
+  })
+
+  // -- watch edge cases ----------------------------------------------------
+
+  describe('watch edge cases', () => {
+    it('multiple watchers can subscribe to the same prefix', () => {
+      const db = RaftDB.open('/tmp/multi-watch.db')
+      const a: string[] = []
+      const b: string[] = []
+      db.watch('users:', (r) => a.push(r.key))
+      db.watch('users:', (r) => b.push(r.key))
+
+      // Each watcher receives its own initial snapshot.
+      expect(a).toHaveLength(1)
+      expect(b).toHaveLength(1)
+      expect(mockCalls.watch).toHaveBeenCalledTimes(2)
+    })
+
+    it('unsubscribe is callable after close without throwing', () => {
+      const db = RaftDB.open('/tmp/unsub-after-close.db')
+      const unsub = db.watch('k', () => {})
+      db.close()
+
+      // After close, the unsubscribe handle is now stale. Closing did
+      // call native unwatch implicitly via the mock — calling the
+      // returned function should still be a no-op rather than crash.
+      expect(() => unsub()).not.toThrow()
+    })
+  })
 })
