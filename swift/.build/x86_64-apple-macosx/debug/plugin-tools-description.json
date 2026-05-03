@@ -1,0 +1,678 @@
+{
+  "builtTestProducts" : [
+    {
+      "binaryPath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.xctest/Contents/MacOS/RaftDBPackageTests",
+      "packagePath" : "/Users/Ekundayo/Projects/raft/swift",
+      "productName" : "RaftDBPackageTests"
+    }
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.RaftDB-x86_64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/sources",
+      "importPath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftCollection.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftDB.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftError.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "RaftDB",
+      "moduleOutputPath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules/RaftDB.swiftmodule",
+      "objects" : [
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftCollection.swift.o",
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftDB.swift.o",
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftError.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "x86_64-apple-macosx12.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j16",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/include/RaftDB-Swift.h",
+        "-swift-version",
+        "5",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "swift"
+      ],
+      "outputFileMapPath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftCollection.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftDB.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftError.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules/RaftDB.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftCollection.swift",
+        "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftDB.swift",
+        "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftError.swift"
+      ],
+      "tempsPath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.RaftDBPackageTests-x86_64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/sources",
+      "importPath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.derived/runner.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules/RaftDBTests.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "RaftDBPackageTests",
+      "moduleOutputPath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules/RaftDBPackageTests.swiftmodule",
+      "objects" : [
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/runner.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "x86_64-apple-macosx12.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j16",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/include/RaftDBPackageTests-Swift.h",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "swift"
+      ],
+      "outputFileMapPath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules/RaftDBPackageTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.derived/runner.swift"
+      ],
+      "tempsPath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.RaftDBTests-x86_64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBTests.build/sources",
+      "importPath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/Tests/RaftDBTests/RaftDBTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules/RaftDB.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "RaftDBTests",
+      "moduleOutputPath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules/RaftDBTests.swiftmodule",
+      "objects" : [
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBTests.build/RaftDBTests.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "x86_64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j16",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-swift-version",
+        "5",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "swift"
+      ],
+      "outputFileMapPath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBTests.build/RaftDBTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules/RaftDBTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/Ekundayo/Projects/raft/swift/Tests/RaftDBTests/RaftDBTests.swift"
+      ],
+      "tempsPath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBTests.build",
+      "wholeModuleOptimization" : false
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "RaftDB" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "RaftDB",
+      "-package-name",
+      "swift",
+      "-c",
+      "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftCollection.swift",
+      "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftDB.swift",
+      "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftError.swift",
+      "-I",
+      "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules",
+      "-target",
+      "x86_64-apple-macosx12.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j16",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/include/RaftDB-Swift.h",
+      "-swift-version",
+      "5",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "swift",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "RaftDBPackageTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "RaftDBPackageTests",
+      "-package-name",
+      "swift",
+      "-c",
+      "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.derived/runner.swift",
+      "-I",
+      "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules",
+      "-target",
+      "x86_64-apple-macosx12.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j16",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/include/RaftDBPackageTests-Swift.h",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "swift",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "RaftDBTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "RaftDBTests",
+      "-package-name",
+      "swift",
+      "-c",
+      "/Users/Ekundayo/Projects/raft/swift/Tests/RaftDBTests/RaftDBTests.swift",
+      "-I",
+      "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules",
+      "-target",
+      "x86_64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j16",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-swift-version",
+      "5",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "swift",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "RaftDB" : [
+      "CRaftDB"
+    ],
+    "RaftDBPackageTests" : [
+      "RaftDBTests",
+      "RaftDB",
+      "CRaftDB"
+    ],
+    "RaftDBTests" : [
+      "RaftDB",
+      "CRaftDB"
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+    "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.derived/runner.swift" : {
+      "inputs" : [
+
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.derived/runner.swift"
+        }
+      ]
+    }
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftCollection.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftDB.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftError.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/sources"
+    },
+    "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.derived/runner.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/sources"
+    },
+    "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftCollection.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftDB.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftError.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBTests.build/RaftDBTests.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.product/Objects.LinkFileList"
+    },
+    "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/Tests/RaftDBTests/RaftDBTests.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBTests.build/sources"
+    },
+    "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+    }
+  }
+}

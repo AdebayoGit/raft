@@ -1,0 +1,26 @@
+{
+  "": {
+    "swift-dependencies": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/master.swiftdeps"
+  },
+  "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftCollection.swift": {
+    "dependencies": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftCollection.d",
+    "object": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftCollection.swift.o",
+    "swiftmodule": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftCollection~partial.swiftmodule",
+    "swift-dependencies": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftCollection.swiftdeps",
+    "diagnostics": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftCollection.dia"
+  },
+  "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftDB.swift": {
+    "dependencies": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftDB.d",
+    "object": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftDB.swift.o",
+    "swiftmodule": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftDB~partial.swiftmodule",
+    "swift-dependencies": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftDB.swiftdeps",
+    "diagnostics": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftDB.dia"
+  },
+  "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftError.swift": {
+    "dependencies": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftError.d",
+    "object": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftError.swift.o",
+    "swiftmodule": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftError~partial.swiftmodule",
+    "swift-dependencies": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftError.swiftdeps",
+    "diagnostics": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftError.dia"
+  }
+}

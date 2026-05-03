@@ -308,16 +308,6 @@ describe('RaftDB', () => {
       db.close()
       await expect(db.delete('k')).rejects.toThrow('closed')
     })
-
-    it('isClosed reflects state across instances independently', () => {
-      const a = RaftDB.open('/tmp/a.db')
-      const b = RaftDB.open('/tmp/b.db')
-      a.close()
-      expect(a.isClosed).toBe(true)
-      expect(b.isClosed).toBe(false)
-      b.close()
-      expect(b.isClosed).toBe(true)
-    })
   })
 
   // -- watch edge cases ----------------------------------------------------

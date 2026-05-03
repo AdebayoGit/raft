@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/master.swiftdeps"
+  },
+  "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.derived/runner.swift": {
+    "dependencies": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/runner.d",
+    "object": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/runner.swift.o",
+    "swiftmodule": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/runner~partial.swiftmodule",
+    "swift-dependencies": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/runner.swiftdeps",
+    "diagnostics": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDBPackageTests.build/runner.dia"
+  }
+}
