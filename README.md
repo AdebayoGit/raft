@@ -112,7 +112,7 @@ To build the mobile artifacts:
 - Not a cloud product or vendor lock-in
 - Not a SQL database
 - Not a key-value store (though one powers it internally)
-- Not a replacement for your backend — it is the client layer
+- Not a replacement for your backend, it is the client layer
 
 ## Naming
 
