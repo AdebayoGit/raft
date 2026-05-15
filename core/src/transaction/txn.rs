@@ -231,23 +231,15 @@ mod tests {
         let store = setup_store();
         let mut txn = Transaction::begin(&store);
 
-        txn.put_batch(vec![
-            doc(1, "Alice V2"),
-            doc(2, "Bob V2"),
-            doc(4, "Diana"),
-        ])
-        .unwrap();
+        txn.put_batch(vec![doc(1, "Alice V2"), doc(2, "Bob V2"), doc(4, "Diana")])
+            .unwrap();
         assert_eq!(txn.pending_writes(), 3);
 
         txn.commit().unwrap();
 
         assert_eq!(store.count(), 4);
         assert_eq!(
-            store
-                .get_versioned(DocId(4))
-                .unwrap()
-                .document
-                .get("name"),
+            store.get_versioned(DocId(4)).unwrap().document.get("name"),
             Some(&Value::String("Diana".into()))
         );
     }
@@ -289,11 +281,7 @@ mod tests {
         txn.commit().unwrap();
 
         assert_eq!(
-            store
-                .get_versioned(DocId(1))
-                .unwrap()
-                .document
-                .get("name"),
+            store.get_versioned(DocId(1)).unwrap().document.get("name"),
             Some(&Value::String("Alice Revived".into()))
         );
     }
@@ -324,11 +312,7 @@ mod tests {
 
         // Store unchanged.
         assert_eq!(
-            store
-                .get_versioned(DocId(1))
-                .unwrap()
-                .document
-                .get("name"),
+            store.get_versioned(DocId(1)).unwrap().document.get("name"),
             Some(&Value::String("Alice".into()))
         );
     }
@@ -354,11 +338,7 @@ mod tests {
         }
 
         assert_eq!(
-            store
-                .get_versioned(DocId(1))
-                .unwrap()
-                .document
-                .get("name"),
+            store.get_versioned(DocId(1)).unwrap().document.get("name"),
             Some(&Value::String("Alice".into()))
         );
     }
@@ -392,11 +372,7 @@ mod tests {
 
         // Store has txn2's value.
         assert_eq!(
-            store
-                .get_versioned(DocId(1))
-                .unwrap()
-                .document
-                .get("name"),
+            store.get_versioned(DocId(1)).unwrap().document.get("name"),
             Some(&Value::String("Alice from Txn2".into()))
         );
     }
@@ -523,11 +499,7 @@ mod tests {
 
         // Neither write was applied.
         assert_eq!(
-            store
-                .get_versioned(DocId(1))
-                .unwrap()
-                .document
-                .get("name"),
+            store.get_versioned(DocId(1)).unwrap().document.get("name"),
             Some(&Value::String("Alice".into()))
         );
     }

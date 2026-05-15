@@ -9,4 +9,4 @@ mod authority;
 mod resolver;
 
 pub use authority::{MergeContext, SyncAuthority};
-pub use resolver::ConflictResolver;
+pub use resolver::{ConflictResolver, CustomResolverFn, ResolveOutcome};

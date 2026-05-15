@@ -178,7 +178,9 @@ impl QueryPlanner {
                 };
 
                 if let Some(p) = plan {
-                    let dominated = best.as_ref().is_none_or(|b| p.estimated_cost < b.estimated_cost);
+                    let dominated = best
+                        .as_ref()
+                        .is_none_or(|b| p.estimated_cost < b.estimated_cost);
                     if dominated {
                         best = Some(p);
                     }
@@ -224,26 +226,29 @@ mod tests {
 
     #[test]
     fn eq_with_hash_index() {
-        let q = Query::collection("users")
-            .filter(Filter::eq("status", Value::String("active".into())));
+        let q =
+            Query::collection("users").filter(Filter::eq("status", Value::String("active".into())));
         let plan = QueryPlanner::plan(&q, &[hash_index("status")], 1000);
-        assert!(matches!(plan.strategy, ScanStrategy::HashLookup { ref field, .. } if field == "status"));
+        assert!(
+            matches!(plan.strategy, ScanStrategy::HashLookup { ref field, .. } if field == "status")
+        );
         assert_eq!(plan.estimated_cost, 1);
     }
 
     #[test]
     fn eq_with_btree_index() {
-        let q = Query::collection("users")
-            .filter(Filter::eq("status", Value::String("active".into())));
+        let q =
+            Query::collection("users").filter(Filter::eq("status", Value::String("active".into())));
         let plan = QueryPlanner::plan(&q, &[btree_index("status")], 1000);
-        assert!(matches!(plan.strategy, ScanStrategy::BTreeRange { ref field, .. } if field == "status"));
+        assert!(
+            matches!(plan.strategy, ScanStrategy::BTreeRange { ref field, .. } if field == "status")
+        );
         assert_eq!(plan.estimated_cost, 1);
     }
 
     #[test]
     fn gt_with_btree_index() {
-        let q = Query::collection("users")
-            .filter(Filter::gt("age", Value::Int(18)));
+        let q = Query::collection("users").filter(Filter::gt("age", Value::Int(18)));
         let plan = QueryPlanner::plan(&q, &[btree_index("age")], 900);
         assert!(matches!(
             plan.strategy,
@@ -258,8 +263,7 @@ mod tests {
 
     #[test]
     fn lt_with_btree_index() {
-        let q = Query::collection("users")
-            .filter(Filter::lt("age", Value::Int(65)));
+        let q = Query::collection("users").filter(Filter::lt("age", Value::Int(65)));
         let plan = QueryPlanner::plan(&q, &[btree_index("age")], 900);
         assert!(matches!(
             plan.strategy,
@@ -273,8 +277,7 @@ mod tests {
 
     #[test]
     fn lte_with_btree_index() {
-        let q = Query::collection("users")
-            .filter(Filter::lte("score", Value::Float(99.0)));
+        let q = Query::collection("users").filter(Filter::lte("score", Value::Float(99.0)));
         let plan = QueryPlanner::plan(&q, &[btree_index("score")], 300);
         assert!(matches!(
             plan.strategy,
@@ -287,8 +290,7 @@ mod tests {
 
     #[test]
     fn gte_with_btree_index() {
-        let q = Query::collection("users")
-            .filter(Filter::gte("score", Value::Float(50.0)));
+        let q = Query::collection("users").filter(Filter::gte("score", Value::Float(50.0)));
         let plan = QueryPlanner::plan(&q, &[btree_index("score")], 300);
         assert!(matches!(
             plan.strategy,
@@ -302,8 +304,7 @@ mod tests {
 
     #[test]
     fn hash_index_cannot_serve_range() {
-        let q = Query::collection("users")
-            .filter(Filter::gt("age", Value::Int(18)));
+        let q = Query::collection("users").filter(Filter::gt("age", Value::Int(18)));
         let plan = QueryPlanner::plan(&q, &[hash_index("age")], 1000);
         assert_eq!(plan.strategy, ScanStrategy::FullScan);
     }
@@ -318,8 +319,8 @@ mod tests {
 
     #[test]
     fn no_matching_index_full_scan() {
-        let q = Query::collection("users")
-            .filter(Filter::eq("email", Value::String("a@b.com".into())));
+        let q =
+            Query::collection("users").filter(Filter::eq("email", Value::String("a@b.com".into())));
         // Only have index on "name", not "email".
         let plan = QueryPlanner::plan(&q, &[hash_index("name")], 500);
         assert_eq!(plan.strategy, ScanStrategy::FullScan);

@@ -76,12 +76,18 @@ impl QueryExecutor {
                 let va = a.get(&field_name);
                 let vb = b.get(&field_name);
                 let ord = match (va, vb) {
-                    (Some(a_val), Some(b_val)) => a_val.partial_cmp(b_val).unwrap_or(std::cmp::Ordering::Equal),
+                    (Some(a_val), Some(b_val)) => a_val
+                        .partial_cmp(b_val)
+                        .unwrap_or(std::cmp::Ordering::Equal),
                     (Some(_), None) => std::cmp::Ordering::Less,
                     (None, Some(_)) => std::cmp::Ordering::Greater,
                     (None, None) => std::cmp::Ordering::Equal,
                 };
-                if desc { ord.reverse() } else { ord }
+                if desc {
+                    ord.reverse()
+                } else {
+                    ord
+                }
             });
         }
 
@@ -243,7 +249,9 @@ mod tests {
 
         let results = QueryExecutor::execute(&q, &plan, &store, &idx_set);
         assert_eq!(results.len(), 3);
-        assert!(results.iter().all(|d| d.get("active") == Some(&Value::Bool(true))));
+        assert!(results
+            .iter()
+            .all(|d| d.get("active") == Some(&Value::Bool(true))));
     }
 
     // ── Hash index ──
@@ -255,8 +263,8 @@ mod tests {
         let mut hash_map = HashMap::new();
         hash_map.insert("name".to_string(), hash_idx);
 
-        let q = Query::collection("users")
-            .filter(Filter::eq("name", Value::String("Alice".into())));
+        let q =
+            Query::collection("users").filter(Filter::eq("name", Value::String("Alice".into())));
         let indexes = vec![IndexInfo {
             field: "name".into(),
             kind: IndexKind::Hash,
@@ -285,8 +293,7 @@ mod tests {
         let mut btree_map = HashMap::new();
         btree_map.insert("age".to_string(), btree_idx);
 
-        let q = Query::collection("users")
-            .filter(Filter::gte("age", Value::Int(28)));
+        let q = Query::collection("users").filter(Filter::gte("age", Value::Int(28)));
         let indexes = vec![IndexInfo {
             field: "age".into(),
             kind: IndexKind::BTree,
@@ -390,9 +397,7 @@ mod tests {
     #[test]
     fn limit() {
         let store = sample_store();
-        let q = Query::collection("users")
-            .sort(Sort::asc("age"))
-            .limit(3);
+        let q = Query::collection("users").sort(Sort::asc("age")).limit(3);
         let plan = QueryPlanner::plan(&q, &[], store.count());
         let (hash, btree) = empty_indexes();
         let idx_set = IndexSet {
@@ -477,10 +482,7 @@ mod tests {
 
         let results = QueryExecutor::execute(&q, &plan, &store, &idx_set);
         assert_eq!(results.len(), 1);
-        assert_eq!(
-            results[0].get("name"),
-            Some(&Value::String("Alice".into()))
-        );
+        assert_eq!(results[0].get("name"), Some(&Value::String("Alice".into())));
     }
 
     #[test]
@@ -522,8 +524,8 @@ mod tests {
     #[test]
     fn empty_store() {
         let store = MemDocStore::new();
-        let q = Query::collection("users")
-            .filter(Filter::eq("name", Value::String("Alice".into())));
+        let q =
+            Query::collection("users").filter(Filter::eq("name", Value::String("Alice".into())));
         let plan = QueryPlanner::plan(&q, &[], store.count());
         let (hash, btree) = empty_indexes();
         let idx_set = IndexSet {

@@ -109,7 +109,10 @@ impl SSTableReader {
         }
 
         // Find the candidate block via binary search on the index.
-        let block_idx = match self.index.binary_search_by(|e| e.first_key.as_slice().cmp(key)) {
+        let block_idx = match self
+            .index
+            .binary_search_by(|e| e.first_key.as_slice().cmp(key))
+        {
             Ok(i) => i,
             Err(0) => return Ok(None), // key is before the first block
             Err(i) => i - 1,
@@ -122,11 +125,7 @@ impl SSTableReader {
     /// Range scan — returns all entries with `start <= key < end` in sorted
     /// order. Both bounds are byte-slice keys. If `end` is `None`, scans to
     /// the end of the table.
-    pub fn scan(
-        &self,
-        start: &[u8],
-        end: Option<&[u8]>,
-    ) -> Result<Vec<KvPair>, SSTableError> {
+    pub fn scan(&self, start: &[u8], end: Option<&[u8]>) -> Result<Vec<KvPair>, SSTableError> {
         // Find the first block that could contain `start`.
         let first_block = match self
             .index
@@ -183,10 +182,7 @@ impl SSTableReader {
     }
 
     /// Decode all key-value pairs from a data block.
-    fn read_block(
-        &self,
-        ie: &IndexEntry,
-    ) -> Result<Vec<KvPair>, SSTableError> {
+    fn read_block(&self, ie: &IndexEntry) -> Result<Vec<KvPair>, SSTableError> {
         let start = ie.offset as usize;
         let end = start + ie.length as usize;
         if end > self.data.len() {
@@ -214,8 +210,7 @@ impl SSTableReader {
                             reason: "truncated value_len".to_string(),
                         });
                     }
-                    let value_len =
-                        u32::from_be_bytes(cursor[0..4].try_into().unwrap()) as usize;
+                    let value_len = u32::from_be_bytes(cursor[0..4].try_into().unwrap()) as usize;
                     cursor = &cursor[4..];
 
                     if cursor.len() < key_len + value_len {
@@ -343,7 +338,12 @@ mod tests {
 
         for (k, v) in &entries {
             let result = reader.get(k).unwrap();
-            assert_eq!(result, Some(v.clone()), "key {:?}", String::from_utf8_lossy(k));
+            assert_eq!(
+                result,
+                Some(v.clone()),
+                "key {:?}",
+                String::from_utf8_lossy(k)
+            );
         }
     }
 
@@ -365,7 +365,10 @@ mod tests {
 
         assert_eq!(reader.get(b"a").unwrap(), Some(Some(b"alive".to_vec())));
         assert_eq!(reader.get(b"b").unwrap(), Some(None)); // tombstone
-        assert_eq!(reader.get(b"c").unwrap(), Some(Some(b"also alive".to_vec())));
+        assert_eq!(
+            reader.get(b"c").unwrap(),
+            Some(Some(b"also alive".to_vec()))
+        );
     }
 
     #[test]
@@ -385,14 +388,8 @@ mod tests {
 
         let result = reader.scan(b"key-00010", Some(b"key-00020")).unwrap();
         assert_eq!(result.len(), 10);
-        assert_eq!(
-            String::from_utf8_lossy(&result[0].0),
-            "key-00010"
-        );
-        assert_eq!(
-            String::from_utf8_lossy(&result[9].0),
-            "key-00019"
-        );
+        assert_eq!(String::from_utf8_lossy(&result[0].0), "key-00010");
+        assert_eq!(String::from_utf8_lossy(&result[9].0), "key-00019");
     }
 
     #[test]

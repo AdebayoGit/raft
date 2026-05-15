@@ -154,10 +154,7 @@ impl StorageEngine {
     ///
     /// On open: replays the manifest to learn which SSTables are live,
     /// then replays the WAL to recover any unflushed memtable state.
-    pub fn open(
-        db_dir: impl AsRef<Path>,
-        config: StorageConfig,
-    ) -> Result<Self, StorageError> {
+    pub fn open(db_dir: impl AsRef<Path>, config: StorageConfig) -> Result<Self, StorageError> {
         let db_dir = db_dir.as_ref().to_path_buf();
         fs::create_dir_all(&db_dir)?;
 
@@ -173,11 +170,7 @@ impl StorageEngine {
         let version = manifest.current_version();
 
         // Derive next table ID from existing tables.
-        let next_table_id = version
-            .tables
-            .keys()
-            .last()
-            .map_or(1, |max_id| max_id + 1);
+        let next_table_id = version.tables.keys().last().map_or(1, |max_id| max_id + 1);
 
         // Open WAL.
         let wal_path = db_dir.join("wal.log");
@@ -370,8 +363,14 @@ impl StorageEngine {
         let new_id = self.next_table_id;
         self.next_table_id += 1;
 
-        let smallest_key = all_entries.first().map(|(k, _)| k.clone()).unwrap_or_default();
-        let largest_key = all_entries.last().map(|(k, _)| k.clone()).unwrap_or_default();
+        let smallest_key = all_entries
+            .first()
+            .map(|(k, _)| k.clone())
+            .unwrap_or_default();
+        let largest_key = all_entries
+            .last()
+            .map(|(k, _)| k.clone())
+            .unwrap_or_default();
         let entry_count = all_entries.len() as u64;
 
         let out_path = self.sstable_path(new_id, next_level);
@@ -411,10 +410,7 @@ impl StorageEngine {
         self.next_table_id += 1;
 
         // Swap in a fresh memtable.
-        let old = std::mem::replace(
-            &mut self.memtable,
-            MemTable::new(self.config.memtable_size),
-        );
+        let old = std::mem::replace(&mut self.memtable, MemTable::new(self.config.memtable_size));
 
         let entries: Vec<(Vec<u8>, Option<Vec<u8>>)> = old.into_iter().collect();
         if entries.is_empty() {
@@ -490,9 +486,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join("raft_db_engine_tests")
-            .join(name);
+        let dir = std::env::temp_dir().join("raft_db_engine_tests").join(name);
         if dir.exists() {
             fs::remove_dir_all(&dir).unwrap();
         }
@@ -585,7 +579,10 @@ mod tests {
 
         for i in 0u32..20 {
             engine
-                .put(format!("k{i:04}").into_bytes(), format!("v{i:04}").into_bytes())
+                .put(
+                    format!("k{i:04}").into_bytes(),
+                    format!("v{i:04}").into_bytes(),
+                )
                 .unwrap();
         }
 
@@ -630,7 +627,10 @@ mod tests {
             let mut engine = StorageEngine::open(&dir, config.clone()).unwrap();
             for i in 0u32..30 {
                 engine
-                    .put(format!("k{i:04}").into_bytes(), format!("v{i:04}").into_bytes())
+                    .put(
+                        format!("k{i:04}").into_bytes(),
+                        format!("v{i:04}").into_bytes(),
+                    )
                     .unwrap();
             }
         }

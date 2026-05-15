@@ -124,7 +124,11 @@ impl Database {
     pub fn put(&self, collection: &str, doc: Document) -> Result<u64, DatabaseError> {
         let id = doc.id;
         let mut engine = self.inner.engine.lock().expect("engine poisoned");
-        let mut collections = self.inner.collections.write().expect("collections poisoned");
+        let mut collections = self
+            .inner
+            .collections
+            .write()
+            .expect("collections poisoned");
 
         let state = collections.entry(collection.to_string()).or_default();
         let was_present = state.docs.contains_key(&id);
@@ -178,7 +182,11 @@ impl Database {
     /// removed.
     pub fn delete(&self, collection: &str, id: DocId) -> Result<bool, DatabaseError> {
         let mut engine = self.inner.engine.lock().expect("engine poisoned");
-        let mut collections = self.inner.collections.write().expect("collections poisoned");
+        let mut collections = self
+            .inner
+            .collections
+            .write()
+            .expect("collections poisoned");
 
         let Some(state) = collections.get_mut(collection) else {
             return Ok(false);
@@ -215,7 +223,10 @@ impl Database {
     /// Number of documents in `collection`.
     pub fn count(&self, collection: &str) -> usize {
         let collections = self.inner.collections.read().expect("collections poisoned");
-        collections.get(collection).map(|s| s.docs.len()).unwrap_or(0)
+        collections
+            .get(collection)
+            .map(|s| s.docs.len())
+            .unwrap_or(0)
     }
 
     // ── Query ───────────────────────────────────────────────────────────
@@ -240,7 +251,10 @@ impl Database {
     pub fn live_query(
         &self,
         query: Query,
-    ) -> (Vec<Document>, crate::reactive::LiveQuery<DatabaseQueryRunner>) {
+    ) -> (
+        Vec<Document>,
+        crate::reactive::LiveQuery<DatabaseQueryRunner>,
+    ) {
         // Subscribe first so any mutation between now and the snapshot
         // is buffered on the receiver.
         let receiver = self.inner.bus.subscribe();
@@ -248,12 +262,8 @@ impl Database {
         let runner = Arc::new(DatabaseQueryRunner {
             inner: Arc::clone(&self.inner),
         });
-        let live = crate::reactive::LiveQuery::from_receiver(
-            query,
-            runner,
-            receiver,
-            initial.clone(),
-        );
+        let live =
+            crate::reactive::LiveQuery::from_receiver(query, runner, receiver, initial.clone());
         (initial, live)
     }
 
@@ -308,7 +318,11 @@ impl Database {
     // ── Internal helpers ────────────────────────────────────────────────
 
     fn next_id(&self, collection: &str) -> DocId {
-        let mut collections = self.inner.collections.write().expect("collections poisoned");
+        let mut collections = self
+            .inner
+            .collections
+            .write()
+            .expect("collections poisoned");
         let state = collections.entry(collection.to_string()).or_default();
         let id = DocId(state.next_doc_id);
         state.next_doc_id += 1;
@@ -346,7 +360,9 @@ impl DocumentStore for CollectionView<'_> {
     }
 
     fn all_doc_ids(&self) -> Vec<DocId> {
-        let Some(s) = self.state else { return Vec::new() };
+        let Some(s) = self.state else {
+            return Vec::new();
+        };
         let mut ids: Vec<DocId> = s.docs.keys().copied().collect();
         ids.sort();
         ids
@@ -367,7 +383,10 @@ fn execute_query(inner: &DatabaseInner, query: &Query) -> Vec<Document> {
     let plan = QueryPlanner::plan(query, &[], view.count());
     let hash = HashMap::new();
     let btree = HashMap::new();
-    let idx_set = IndexSet { hash: &hash, btree: &btree };
+    let idx_set = IndexSet {
+        hash: &hash,
+        btree: &btree,
+    };
     QueryExecutor::execute(query, &plan, &view, &idx_set)
 }
 
@@ -440,7 +459,12 @@ impl DbTransaction {
         let collections = self.inner.collections.read().expect("collections poisoned");
         let (doc, version) = collections
             .get(collection)
-            .and_then(|s| s.docs.get(&id).cloned().map(|d| (Some(d), s.versions.get(&id).copied().unwrap_or(0))))
+            .and_then(|s| {
+                s.docs
+                    .get(&id)
+                    .cloned()
+                    .map(|d| (Some(d), s.versions.get(&id).copied().unwrap_or(0)))
+            })
             .unwrap_or((None, 0));
 
         self.read_set.insert(key, version);
@@ -471,7 +495,11 @@ impl DbTransaction {
         self.state = TxnState::Finalised;
 
         let mut engine = self.inner.engine.lock().expect("engine poisoned");
-        let mut collections = self.inner.collections.write().expect("collections poisoned");
+        let mut collections = self
+            .inner
+            .collections
+            .write()
+            .expect("collections poisoned");
 
         // Phase 1: validate read set.
         for ((coll, id), expected) in &self.read_set {
@@ -656,7 +684,9 @@ mod tests {
     use std::path::PathBuf;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("raft_db_database_tests").join(name);
+        let dir = std::env::temp_dir()
+            .join("raft_db_database_tests")
+            .join(name);
         if dir.exists() {
             std::fs::remove_dir_all(&dir).ok();
         }
@@ -756,10 +786,14 @@ mod tests {
         let dir = temp_dir("query_sort");
         let db = Database::open(&dir).unwrap();
         for i in 0..5u64 {
-            db.put("users", user(i + 1, &format!("U{i}"), i as i64)).unwrap();
+            db.put("users", user(i + 1, &format!("U{i}"), i as i64))
+                .unwrap();
         }
 
-        let q = Query::collection("users").sort(Sort::desc("age")).limit(2).offset(1);
+        let q = Query::collection("users")
+            .sort(Sort::desc("age"))
+            .limit(2)
+            .offset(1);
         let results = db.query(&q);
         assert_eq!(results.len(), 2);
         // age sorted desc: 4, 3, 2, 1, 0 — offset 1, take 2 → [3, 2]
@@ -821,7 +855,9 @@ mod tests {
         let result = txn.commit();
         assert!(matches!(
             result,
-            Err(DatabaseError::Transaction(TransactionError::Conflict { .. }))
+            Err(DatabaseError::Transaction(
+                TransactionError::Conflict { .. }
+            ))
         ));
         // Concurrent write wins.
         assert_eq!(

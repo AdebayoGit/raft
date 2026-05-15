@@ -12,11 +12,20 @@ pub enum SchemaError {
     #[error("duplicate field name: `{0}`")]
     DuplicateField(String),
 
-    #[error("CRDT hint {hint:?} is not compatible with field type {field_type:?} on field `{field}`")]
+    #[error(
+        "CRDT hint {hint:?} is not compatible with field type {field_type:?} on field `{field}`"
+    )]
     IncompatibleCrdtHint {
         field: String,
         field_type: super::FieldType,
         hint: super::CrdtHint,
+    },
+
+    #[error("conflict strategy {strategy:?} is not compatible with field type {field_type:?} on field `{field}`")]
+    IncompatibleConflictStrategy {
+        field: String,
+        field_type: super::FieldType,
+        strategy: super::ConflictStrategy,
     },
 
     #[error("schema must contain at least one field")]

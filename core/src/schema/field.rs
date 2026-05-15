@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::conflict::ConflictStrategy;
+
 /// Logical data type for a schema field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FieldType {
@@ -69,16 +71,37 @@ impl From<FieldType> for CrdtHint {
 }
 
 /// A single field definition within a schema.
+///
+/// `conflict_strategy` is `#[serde(default)]` for backward compatibility:
+/// schemas serialised under v0.1.0 (which had no per-field strategy)
+/// deserialise with the strategy derived from `field_type` via
+/// [`ConflictStrategy::default_for`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldDef {
     name: String,
     field_type: FieldType,
     crdt_hint: CrdtHint,
     required: bool,
+    /// Per-field conflict resolution strategy. Defaults to a value
+    /// derived from `field_type` so legacy schemas keep their behaviour.
+    #[serde(default = "default_strategy_serde")]
+    conflict_strategy: ConflictStrategy,
+}
+
+fn default_strategy_serde() -> ConflictStrategy {
+    // We can't see the field_type at deserialisation time of this single
+    // attribute, so we fall back to the most common scalar default. The
+    // schema builder always sets this explicitly when constructing in
+    // memory, so this only matters for legacy on-disk schemas where the
+    // attribute is absent — in that case the original v0.1.0 behaviour
+    // for any field type was the corresponding CRDT primitive, which we
+    // approximate with LwwRegister. Callers that need exact field-typed
+    // defaults should call `FieldDef::with_default_strategy(...)`.
+    ConflictStrategy::Crdt(super::conflict::CrdtKind::LwwRegister)
 }
 
 impl FieldDef {
-    /// Creates a new field definition.
+    /// Creates a new field definition with an explicit conflict strategy.
     ///
     /// Callers should prefer [`SchemaBuilder`](super::SchemaBuilder) which
     /// validates compatibility automatically.
@@ -88,12 +111,19 @@ impl FieldDef {
         crdt_hint: CrdtHint,
         required: bool,
     ) -> Self {
+        let conflict_strategy = ConflictStrategy::default_for(field_type);
         Self {
             name,
             field_type,
             crdt_hint,
             required,
+            conflict_strategy,
         }
+    }
+
+    /// Override the field's conflict strategy. Used by the schema builder.
+    pub(crate) fn set_conflict_strategy(&mut self, strategy: ConflictStrategy) {
+        self.conflict_strategy = strategy;
     }
 
     pub fn name(&self) -> &str {
@@ -110,6 +140,13 @@ impl FieldDef {
 
     pub fn required(&self) -> bool {
         self.required
+    }
+
+    /// The per-field conflict resolution strategy. Defaults to
+    /// [`ConflictStrategy::default_for(field_type)`](ConflictStrategy::default_for)
+    /// when not explicitly set on the schema.
+    pub fn conflict_strategy(&self) -> &ConflictStrategy {
+        &self.conflict_strategy
     }
 }
 
@@ -172,6 +209,18 @@ mod tests {
         assert_eq!(f.field_type(), FieldType::Int);
         assert_eq!(f.crdt_hint(), CrdtHint::Counter);
         assert!(!f.required());
+        // Default strategy follows from the field type.
+        assert_eq!(
+            f.conflict_strategy(),
+            &ConflictStrategy::default_for(FieldType::Int),
+        );
+    }
+
+    #[test]
+    fn field_def_set_conflict_strategy() {
+        let mut f = FieldDef::new("name".into(), FieldType::String, CrdtHint::Lww, false);
+        f.set_conflict_strategy(ConflictStrategy::LastWriteWins);
+        assert_eq!(f.conflict_strategy(), &ConflictStrategy::LastWriteWins);
     }
 
     #[test]

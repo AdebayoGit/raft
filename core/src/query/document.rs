@@ -43,7 +43,11 @@ impl Value {
                 // IEEE 754 trick: if the sign bit is set, flip all bits;
                 // otherwise flip only the sign bit. This gives correct
                 // unsigned byte ordering for all finite floats.
-                let sortable = if bits >> 63 == 1 { !bits } else { bits ^ (1u64 << 63) };
+                let sortable = if bits >> 63 == 1 {
+                    !bits
+                } else {
+                    bits ^ (1u64 << 63)
+                };
                 sortable.to_be_bytes().to_vec()
             }
             Value::Bool(b) => vec![u8::from(*b)],

@@ -114,18 +114,10 @@ impl Filter {
 fn evaluate_predicate(doc_val: &Value, predicate: Predicate, filter_val: &Value) -> bool {
     match predicate {
         Predicate::Eq => doc_val == filter_val,
-        Predicate::Lt => doc_val
-            .partial_cmp(filter_val)
-            .is_some_and(|o| o.is_lt()),
-        Predicate::Gt => doc_val
-            .partial_cmp(filter_val)
-            .is_some_and(|o| o.is_gt()),
-        Predicate::Lte => doc_val
-            .partial_cmp(filter_val)
-            .is_some_and(|o| o.is_le()),
-        Predicate::Gte => doc_val
-            .partial_cmp(filter_val)
-            .is_some_and(|o| o.is_ge()),
+        Predicate::Lt => doc_val.partial_cmp(filter_val).is_some_and(|o| o.is_lt()),
+        Predicate::Gt => doc_val.partial_cmp(filter_val).is_some_and(|o| o.is_gt()),
+        Predicate::Lte => doc_val.partial_cmp(filter_val).is_some_and(|o| o.is_le()),
+        Predicate::Gte => doc_val.partial_cmp(filter_val).is_some_and(|o| o.is_ge()),
         Predicate::Contains => match (doc_val, filter_val) {
             (Value::String(haystack), Value::String(needle)) => haystack.contains(needle.as_str()),
             (Value::Bytes(haystack), Value::Bytes(needle)) => haystack
@@ -217,14 +209,19 @@ mod tests {
     #[test]
     fn contains_string() {
         let fields = sample_fields();
-        assert!(Filter::contains("bio", Value::String("Rust".into())).matches(&field_getter(&fields)));
-        assert!(!Filter::contains("bio", Value::String("Python".into())).matches(&field_getter(&fields)));
+        assert!(
+            Filter::contains("bio", Value::String("Rust".into())).matches(&field_getter(&fields))
+        );
+        assert!(!Filter::contains("bio", Value::String("Python".into()))
+            .matches(&field_getter(&fields)));
     }
 
     #[test]
     fn contains_cross_type_returns_false() {
         let fields = sample_fields();
-        assert!(!Filter::contains("age", Value::String("30".into())).matches(&field_getter(&fields)));
+        assert!(
+            !Filter::contains("age", Value::String("30".into())).matches(&field_getter(&fields))
+        );
     }
 
     // ── Missing field ──

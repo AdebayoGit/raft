@@ -72,7 +72,10 @@ impl CompactionScheduler {
     /// Create a scheduler rooted at `db_dir` with the given configuration.
     ///
     /// Creates the directory structure if it doesn't exist.
-    pub fn open(db_dir: impl AsRef<Path>, config: CompactionConfig) -> Result<Self, CompactionError> {
+    pub fn open(
+        db_dir: impl AsRef<Path>,
+        config: CompactionConfig,
+    ) -> Result<Self, CompactionError> {
         let db_dir = db_dir.as_ref().to_path_buf();
         let mut levels = Vec::with_capacity(config.max_levels);
         let mut max_id: u64 = 0;

@@ -178,10 +178,11 @@ mod tests {
         // First recv should report lag (missed events).
         let result = rx.recv().await;
         assert!(
-            result.is_ok() || matches!(
-                result,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
-            ),
+            result.is_ok()
+                || matches!(
+                    result,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
+                ),
             "expected either a message or Lagged, got {result:?}"
         );
     }
@@ -235,7 +236,11 @@ mod tests {
         let bus = EventBus::new();
         let mut rx = bus.subscribe();
 
-        for mt in [MutationType::Insert, MutationType::Update, MutationType::Delete] {
+        for mt in [
+            MutationType::Insert,
+            MutationType::Update,
+            MutationType::Delete,
+        ] {
             bus.publish(MutationEvent {
                 collection: "test".into(),
                 doc_id: DocId(0),

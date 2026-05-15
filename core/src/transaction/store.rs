@@ -113,7 +113,12 @@ impl VersionedStore for MemVersionedStore {
     }
 
     fn current_version(&self, id: DocId) -> Option<u64> {
-        self.inner.lock().unwrap().docs.get(&id).map(|vd| vd.version)
+        self.inner
+            .lock()
+            .unwrap()
+            .docs
+            .get(&id)
+            .map(|vd| vd.version)
     }
 
     fn apply_batch(
@@ -192,11 +197,7 @@ mod tests {
         let store = MemVersionedStore::new();
         store.insert(doc(1, "Alice"));
 
-        let result = store.apply_batch(
-            &[(DocId(1), 1)],
-            vec![doc(1, "Alice Updated")],
-            &[],
-        );
+        let result = store.apply_batch(&[(DocId(1), 1)], vec![doc(1, "Alice Updated")], &[]);
         assert!(result.is_ok());
 
         let vd = store.get_versioned(DocId(1)).unwrap();
@@ -213,11 +214,7 @@ mod tests {
         store.insert(doc(1, "Alice"));
 
         // Stale version (0 ≠ 1).
-        let result = store.apply_batch(
-            &[(DocId(1), 0)],
-            vec![doc(1, "Alice Updated")],
-            &[],
-        );
+        let result = store.apply_batch(&[(DocId(1), 0)], vec![doc(1, "Alice Updated")], &[]);
         assert!(matches!(
             result,
             Err(TransactionError::Conflict {
@@ -234,11 +231,7 @@ mod tests {
         store.insert(doc(1, "Alice"));
         store.insert(doc(2, "Bob"));
 
-        let result = store.apply_batch(
-            &[(DocId(2), 2)],
-            vec![],
-            &[DocId(2)],
-        );
+        let result = store.apply_batch(&[(DocId(2), 2)], vec![], &[DocId(2)]);
         assert!(result.is_ok());
         assert!(store.get_versioned(DocId(2)).is_none());
         assert_eq!(store.count(), 1);

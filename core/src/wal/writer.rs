@@ -20,10 +20,7 @@ impl Wal {
     /// The file is opened in append mode — existing data is preserved.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, WalError> {
         let path = path.as_ref().to_path_buf();
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let writer = BufWriter::new(file);
         Ok(Self { path, writer })
     }

@@ -4,9 +4,7 @@ use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criteri
 use raftdb::{StorageConfig, StorageEngine};
 
 fn bench_dir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir()
-        .join("raft_db_bench")
-        .join(name);
+    let dir = std::env::temp_dir().join("raft_db_bench").join(name);
     if dir.exists() {
         fs::remove_dir_all(&dir).unwrap();
     }

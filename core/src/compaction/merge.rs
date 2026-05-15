@@ -18,9 +18,9 @@ pub(crate) fn k_way_merge(inputs: Vec<Vec<KvPair>>) -> Vec<KvPair> {
 
     // Cursors: one per input, tracking the current position.
     let mut cursors: Vec<std::iter::Peekable<std::vec::IntoIter<KvPair>>> = inputs
-            .into_iter()
-            .map(|v| v.into_iter().peekable())
-            .collect();
+        .into_iter()
+        .map(|v| v.into_iter().peekable())
+        .collect();
 
     let mut result = Vec::new();
 

@@ -61,19 +61,19 @@ impl BlockBuilder {
         }
 
         // key_len
-        self.data.extend_from_slice(&(key.len() as u32).to_be_bytes());
+        self.data
+            .extend_from_slice(&(key.len() as u32).to_be_bytes());
 
         match value {
             Some(v) => {
                 self.data.push(1); // live
-                self.data
-                    .extend_from_slice(&(v.len() as u32).to_be_bytes());
+                self.data.extend_from_slice(&(v.len() as u32).to_be_bytes());
                 self.data.extend_from_slice(key);
                 self.data.extend_from_slice(v);
             }
             None => {
                 self.data.push(0); // tombstone
-                // no value_len for tombstones
+                                   // no value_len for tombstones
                 self.data.extend_from_slice(key);
             }
         }

@@ -82,7 +82,10 @@ mod tests {
     #[test]
     fn display_variants() {
         assert_eq!(SyncAuthority::LocalFirst.to_string(), "LocalFirst");
-        assert_eq!(SyncAuthority::RemoteAuthority.to_string(), "RemoteAuthority");
+        assert_eq!(
+            SyncAuthority::RemoteAuthority.to_string(),
+            "RemoteAuthority"
+        );
         assert_eq!(SyncAuthority::RemoteFirst.to_string(), "RemoteFirst");
     }
 

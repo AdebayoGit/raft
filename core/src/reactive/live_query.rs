@@ -158,10 +158,7 @@ fn index_by_id(docs: Vec<Document>) -> HashMap<DocId, Document> {
 }
 
 /// Compute the diff between `old` and `new` result maps.
-fn compute_diff(
-    old: &HashMap<DocId, Document>,
-    new: &HashMap<DocId, Document>,
-) -> QueryDiff {
+fn compute_diff(old: &HashMap<DocId, Document>, new: &HashMap<DocId, Document>) -> QueryDiff {
     let mut added = Vec::new();
     let mut removed = Vec::new();
     let mut updated = Vec::new();
@@ -458,8 +455,7 @@ mod tests {
             user(1, "Alice", true),
             user(2, "Bob", false),
         ]));
-        let query =
-            Query::collection("users").filter(Filter::eq("active", Value::Bool(true)));
+        let query = Query::collection("users").filter(Filter::eq("active", Value::Bool(true)));
         let mut lq = LiveQuery::new(query, runner.clone(), &bus);
 
         let bus2 = bus.clone();
@@ -483,8 +479,7 @@ mod tests {
             user(1, "Alice", true),
             user(2, "Bob", true),
         ]));
-        let query =
-            Query::collection("users").filter(Filter::eq("active", Value::Bool(true)));
+        let query = Query::collection("users").filter(Filter::eq("active", Value::Bool(true)));
         let mut lq = LiveQuery::new(query, runner.clone(), &bus);
 
         let bus2 = bus.clone();

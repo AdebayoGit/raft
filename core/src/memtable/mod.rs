@@ -93,7 +93,6 @@ impl MemTable {
     pub fn size_bytes(&self) -> usize {
         self.size_bytes
     }
-
 }
 
 impl IntoIterator for MemTable {

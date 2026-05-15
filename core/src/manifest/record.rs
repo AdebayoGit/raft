@@ -44,7 +44,10 @@ pub enum ManifestRecord {
     SetSequence(u64),
     /// Full snapshot of the current version (sequence + all live tables).
     /// Written periodically to bound recovery time.
-    Snapshot { sequence: u64, tables: Vec<SSTableMeta> },
+    Snapshot {
+        sequence: u64,
+        tables: Vec<SSTableMeta>,
+    },
 }
 
 // ── Tag constants ──
@@ -169,11 +172,7 @@ impl ManifestRecord {
         if buf.remaining() < payload_len + 4 {
             return Err(ManifestError::CorruptRecord {
                 offset,
-                reason: format!(
-                    "need {} bytes, have {}",
-                    payload_len + 4,
-                    buf.remaining()
-                ),
+                reason: format!("need {} bytes, have {}", payload_len + 4, buf.remaining()),
             });
         }
 
@@ -203,9 +202,8 @@ impl ManifestRecord {
 
         let record = match tag {
             TAG_ADD_TABLE => {
-                let meta = SSTableMeta::decode(&mut payload_cursor).map_err(|reason| {
-                    ManifestError::CorruptRecord { offset, reason }
-                })?;
+                let meta = SSTableMeta::decode(&mut payload_cursor)
+                    .map_err(|reason| ManifestError::CorruptRecord { offset, reason })?;
                 Self::AddTable(meta)
             }
             TAG_REMOVE_TABLE => {
@@ -237,10 +235,8 @@ impl ManifestRecord {
                 let count = payload_cursor.get_u32() as usize;
                 let mut tables = Vec::with_capacity(count);
                 for _ in 0..count {
-                    let meta =
-                        SSTableMeta::decode(&mut payload_cursor).map_err(|reason| {
-                            ManifestError::CorruptRecord { offset, reason }
-                        })?;
+                    let meta = SSTableMeta::decode(&mut payload_cursor)
+                        .map_err(|reason| ManifestError::CorruptRecord { offset, reason })?;
                     tables.push(meta);
                 }
                 Self::Snapshot { sequence, tables }
@@ -272,9 +268,7 @@ mod tests {
         let record = ManifestRecord::AddTable(sample_meta(42));
         let bytes = record.encode();
         let mut cursor: &[u8] = &bytes;
-        let decoded = ManifestRecord::decode(&mut cursor, 0)
-            .unwrap()
-            .unwrap();
+        let decoded = ManifestRecord::decode(&mut cursor, 0).unwrap().unwrap();
         assert_eq!(record, decoded);
     }
 
@@ -283,9 +277,7 @@ mod tests {
         let record = ManifestRecord::RemoveTable(99);
         let bytes = record.encode();
         let mut cursor: &[u8] = &bytes;
-        let decoded = ManifestRecord::decode(&mut cursor, 0)
-            .unwrap()
-            .unwrap();
+        let decoded = ManifestRecord::decode(&mut cursor, 0).unwrap().unwrap();
         assert_eq!(record, decoded);
     }
 
@@ -294,9 +286,7 @@ mod tests {
         let record = ManifestRecord::SetSequence(123_456);
         let bytes = record.encode();
         let mut cursor: &[u8] = &bytes;
-        let decoded = ManifestRecord::decode(&mut cursor, 0)
-            .unwrap()
-            .unwrap();
+        let decoded = ManifestRecord::decode(&mut cursor, 0).unwrap().unwrap();
         assert_eq!(record, decoded);
     }
 
@@ -308,9 +298,7 @@ mod tests {
         };
         let bytes = record.encode();
         let mut cursor: &[u8] = &bytes;
-        let decoded = ManifestRecord::decode(&mut cursor, 0)
-            .unwrap()
-            .unwrap();
+        let decoded = ManifestRecord::decode(&mut cursor, 0).unwrap().unwrap();
         assert_eq!(record, decoded);
     }
 
@@ -322,9 +310,7 @@ mod tests {
         };
         let bytes = record.encode();
         let mut cursor: &[u8] = &bytes;
-        let decoded = ManifestRecord::decode(&mut cursor, 0)
-            .unwrap()
-            .unwrap();
+        let decoded = ManifestRecord::decode(&mut cursor, 0).unwrap().unwrap();
         assert_eq!(record, decoded);
     }
 

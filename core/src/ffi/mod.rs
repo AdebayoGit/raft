@@ -41,20 +41,19 @@ mod query;
 mod transaction;
 
 pub use collection::{
-    rft_collection_count, rft_collection_delete, rft_collection_get,
-    rft_collection_list_ids, rft_collection_put, rft_collection_put_auto,
+    rft_collection_count, rft_collection_delete, rft_collection_get, rft_collection_list_ids,
+    rft_collection_put, rft_collection_put_auto,
 };
 pub use error::RftError;
 pub use handle::RaftDb;
 pub use observe::{rft_observe, rft_observe_query, rft_unobserve, RftObserveCallback};
 pub use query::{
-    rft_query_execute, rft_query_result_count, rft_query_result_free,
-    rft_query_result_get, RaftQueryResult,
+    rft_query_execute, rft_query_result_count, rft_query_result_free, rft_query_result_get,
+    RaftQueryResult,
 };
 pub use transaction::{
-    rft_transaction_begin, rft_transaction_commit, rft_transaction_delete,
-    rft_transaction_get, rft_transaction_put, rft_transaction_rollback,
-    RaftTransaction,
+    rft_transaction_begin, rft_transaction_commit, rft_transaction_delete, rft_transaction_get,
+    rft_transaction_put, rft_transaction_rollback, RaftTransaction,
 };
 
 use std::ffi::CStr;
@@ -217,11 +216,7 @@ pub unsafe extern "C" fn rft_get(
 /// - `db` must be a valid, non-null handle from [`rft_open`].
 /// - `key` must point to at least `key_len` readable bytes.
 #[no_mangle]
-pub unsafe extern "C" fn rft_delete(
-    db: *mut RaftDb,
-    key: *const u8,
-    key_len: usize,
-) -> RftError {
+pub unsafe extern "C" fn rft_delete(db: *mut RaftDb, key: *const u8, key_len: usize) -> RftError {
     let Some(handle) = (unsafe { db.as_ref() }) else {
         return RftError::NullPointer;
     };
@@ -247,11 +242,7 @@ pub unsafe extern "C" fn rft_delete(
 /// - `out_len` must be a valid `*mut usize`.
 /// - `out_buf` must be writable for at least the value of `*out_len`
 ///   bytes, or null.
-pub(crate) unsafe fn write_buffer(
-    bytes: &[u8],
-    out_buf: *mut u8,
-    out_len: *mut usize,
-) -> RftError {
+pub(crate) unsafe fn write_buffer(bytes: &[u8], out_buf: *mut u8, out_len: *mut usize) -> RftError {
     let required = bytes.len();
     let capacity = unsafe { ptr::read(out_len) };
 
@@ -353,12 +344,7 @@ mod tests {
 
             let doc_json = r#"{"id":1,"fields":{"name":{"String":"Alice"}}}"#;
             assert_eq!(
-                rft_collection_put(
-                    db,
-                    coll.as_ptr(),
-                    doc_json.as_ptr(),
-                    doc_json.len(),
-                ),
+                rft_collection_put(db, coll.as_ptr(), doc_json.as_ptr(), doc_json.len(),),
                 RftError::Ok
             );
 
@@ -450,7 +436,9 @@ mod tests {
                 rft_query_result_get(result, 0, buf.as_mut_ptr(), &mut len),
                 RftError::Ok
             );
-            assert!(std::str::from_utf8(&buf[..len]).unwrap().contains("\"Int\""));
+            assert!(std::str::from_utf8(&buf[..len])
+                .unwrap()
+                .contains("\"Int\""));
 
             rft_query_result_free(result);
             rft_close(db);
@@ -520,13 +508,7 @@ mod tests {
 
             let mut sub_id = 0u64;
             assert_eq!(
-                rft_observe(
-                    db,
-                    coll.as_ptr(),
-                    callback,
-                    ptr::null_mut(),
-                    &mut sub_id,
-                ),
+                rft_observe(db, coll.as_ptr(), callback, ptr::null_mut(), &mut sub_id,),
                 RftError::Ok
             );
             assert!(sub_id > 0);
@@ -574,7 +556,10 @@ mod tests {
 
             // Seed two docs before subscribing.
             for i in 1u64..=2 {
-                let doc = format!(r#"{{"id":{i},"fields":{{"age":{{"Int":{}}}}}}}"#, 20 + i as i64);
+                let doc = format!(
+                    r#"{{"id":{i},"fields":{{"age":{{"Int":{}}}}}}}"#,
+                    20 + i as i64
+                );
                 rft_collection_put(db, coll.as_ptr(), doc.as_ptr(), doc.len());
             }
 
@@ -620,7 +605,10 @@ mod tests {
                     *captured
                 );
                 let last = &captured[captured.len() - 1];
-                assert!(last.contains("\"id\":3"), "diff should include doc 3: {last}");
+                assert!(
+                    last.contains("\"id\":3"),
+                    "diff should include doc 3: {last}"
+                );
             }
 
             assert_eq!(rft_unobserve(db, sub_id), RftError::Ok);

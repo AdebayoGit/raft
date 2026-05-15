@@ -130,10 +130,7 @@ mod tests {
             bf.insert(&i.to_be_bytes());
         }
         for i in 0u32..100 {
-            assert!(
-                bf.may_contain(&i.to_be_bytes()),
-                "key {i} should be found"
-            );
+            assert!(bf.may_contain(&i.to_be_bytes()), "key {i} should be found");
         }
     }
 

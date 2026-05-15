@@ -4,7 +4,9 @@ use bytes::{Buf, BufMut};
 ///
 /// Combines a physical wall-clock component (milliseconds since epoch) with a
 /// logical counter to distinguish events that occur within the same millisecond.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct HlcTimestamp {
     /// Milliseconds since Unix epoch.
     pub physical: u64,
@@ -217,7 +219,10 @@ mod tests {
         bytes[payload_offset] ^= 0xFF;
 
         let result = WalEntry::decode(&mut &bytes[..], 0);
-        assert!(matches!(result, Err(crate::wal::WalError::ChecksumMismatch { .. })));
+        assert!(matches!(
+            result,
+            Err(crate::wal::WalError::ChecksumMismatch { .. })
+        ));
     }
 
     #[test]

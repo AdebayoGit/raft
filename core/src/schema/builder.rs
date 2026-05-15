@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use crate::sync::SyncAuthority;
 
+use super::conflict::ConflictStrategy;
 use super::error::SchemaError;
 use super::field::{CrdtHint, FieldDef, FieldType};
 use super::version::SchemaVersion;
@@ -94,6 +95,41 @@ impl SchemaBuilder {
         self.add_field(name.into(), field_type, hint, true)
     }
 
+    /// Sets the conflict resolution strategy for the most recently added
+    /// field. Returns the builder unchanged if no field has been added.
+    ///
+    /// # Panics
+    ///
+    /// Debug builds panic if the strategy is not compatible with the
+    /// field's type (per [`ConflictStrategy::is_compatible_with`]).
+    /// Release builds defer the check to [`build`](Self::build), where it
+    /// surfaces as a [`SchemaError::IncompatibleConflictStrategy`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use raftdb::schema::{Schema, FieldType, ConflictStrategy};
+    ///
+    /// let schema = Schema::builder("user")
+    ///     .field("name", FieldType::String)
+    ///         .conflict(ConflictStrategy::LastWriteWins)
+    ///     .field("balance", FieldType::Int)
+    ///         .conflict(ConflictStrategy::ServerAuthority)
+    ///     .build()
+    ///     .expect("valid schema");
+    /// ```
+    pub fn conflict(mut self, strategy: ConflictStrategy) -> Self {
+        if let Some(last) = self.fields.last_mut() {
+            debug_assert!(
+                strategy.is_compatible_with(last.field_type()),
+                "conflict strategy {strategy:?} is not compatible with field type {:?}",
+                last.field_type(),
+            );
+            last.set_conflict_strategy(strategy);
+        }
+        self
+    }
+
     /// Validates and builds the schema.
     pub fn build(self) -> Result<Schema, SchemaError> {
         if self.name.is_empty() {
@@ -101,6 +137,15 @@ impl SchemaBuilder {
         }
         if self.fields.is_empty() {
             return Err(SchemaError::NoFields);
+        }
+        for f in &self.fields {
+            if !f.conflict_strategy().is_compatible_with(f.field_type()) {
+                return Err(SchemaError::IncompatibleConflictStrategy {
+                    field: f.name().to_owned(),
+                    field_type: f.field_type(),
+                    strategy: f.conflict_strategy().clone(),
+                });
+            }
         }
         Ok(Schema {
             name: self.name,
@@ -213,9 +258,7 @@ mod tests {
 
     #[test]
     fn build_empty_name_fails() {
-        let result = Schema::builder("")
-            .field("x", FieldType::String)
-            .build();
+        let result = Schema::builder("").field("x", FieldType::String).build();
         assert!(matches!(result, Err(SchemaError::EmptyName)));
     }
 
@@ -281,6 +324,64 @@ mod tests {
             .build()
             .expect("valid");
         assert!(schema.field("nonexistent").is_none());
+    }
+
+    #[test]
+    fn conflict_overrides_default_for_last_field() {
+        let schema = Schema::builder("user")
+            .field("name", FieldType::String)
+            .conflict(ConflictStrategy::LastWriteWins)
+            .field("balance", FieldType::Int)
+            .conflict(ConflictStrategy::ServerAuthority)
+            .build()
+            .expect("valid");
+        assert_eq!(
+            schema.field("name").unwrap().conflict_strategy(),
+            &ConflictStrategy::LastWriteWins,
+        );
+        assert_eq!(
+            schema.field("balance").unwrap().conflict_strategy(),
+            &ConflictStrategy::ServerAuthority,
+        );
+    }
+
+    #[test]
+    fn conflict_without_field_is_noop() {
+        // .conflict() before any field is added should not panic.
+        let schema = Schema::builder("x")
+            .conflict(ConflictStrategy::LastWriteWins)
+            .field("a", FieldType::String)
+            .build()
+            .expect("valid");
+        // Field still has the default strategy because .conflict() had no
+        // field to attach to.
+        assert_eq!(
+            schema.field("a").unwrap().conflict_strategy(),
+            &ConflictStrategy::default_for(FieldType::String),
+        );
+    }
+
+    #[test]
+    fn build_rejects_incompatible_strategy_in_release() {
+        // In debug builds, .conflict() asserts compatibility eagerly. The
+        // build()-level guard catches the case where a strategy is set
+        // through other means (e.g. manual construction or future
+        // deserialisation paths).
+        let mut f = FieldDef::new(
+            "items".into(),
+            FieldType::Collection,
+            CrdtHint::OrSet,
+            false,
+        );
+        f.set_conflict_strategy(ConflictStrategy::LastWriteWins); // invalid
+        let mut b = SchemaBuilder::new("bad");
+        b.fields.push(f);
+        b.seen_names.insert("items".into());
+        let err = b.build().unwrap_err();
+        assert!(matches!(
+            err,
+            SchemaError::IncompatibleConflictStrategy { ref field, .. } if field == "items"
+        ));
     }
 
     #[test]

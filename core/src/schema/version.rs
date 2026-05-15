@@ -240,9 +240,9 @@ mod tests {
 
         match validate_evolution(&old, &new) {
             EvolutionResult::Breaking { changes, .. } => {
-                assert!(changes
-                    .iter()
-                    .any(|c| matches!(c, BreakingChange::FieldRemoved { field } if field == "age")));
+                assert!(changes.iter().any(
+                    |c| matches!(c, BreakingChange::FieldRemoved { field } if field == "age")
+                ));
             }
             other => panic!("expected Breaking, got {other:?}"),
         }

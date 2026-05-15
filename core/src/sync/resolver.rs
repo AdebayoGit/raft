@@ -1,24 +1,153 @@
-//! Conflict resolver — dispatches merge based on [`SyncAuthority`].
+//! Conflict resolver — dispatches merge based on [`SyncAuthority`] and
+//! per-field [`ConflictStrategy`].
 //!
-//! The pure CRDT [`Merge`] trait is never modified. Instead, this module
-//! wraps it and adds authority-aware dispatch:
+//! There are two layers of API on [`ConflictResolver`]:
 //!
-//! - **`LocalFirst`** / **`RemoteFirst`**: delegates to `Merge::merge()`.
-//! - **`RemoteAuthority`** with `is_remote == true`: unconditionally
-//!   overwrites local state with remote state.
-//! - **`RemoteAuthority`** with `is_remote == false`: local write wins
-//!   (authority only applies to incoming remote data).
+//! 1. **CRDT-level static methods** (`resolve_lww`, `resolve_counter`,
+//!    `resolve_orset`) — unchanged from v0.1.0. Operate on CRDT primitives
+//!    using the per-collection [`SyncAuthority`].
+//! 2. **Value-level instance methods** (`resolve_value`, `register`) —
+//!    new in v0.1.1. Operate on dynamically-typed [`Value`]s using the
+//!    per-field [`ConflictStrategy`]. The per-field strategy *overrides*
+//!    the per-collection [`SyncAuthority`].
+//!
+//! The pure CRDT [`Merge`] trait is never modified.
 
+use std::collections::HashMap;
 use std::hash::Hash;
+use std::sync::Arc;
 
 use crate::crdt::{Counter, LwwRegister, Merge, OrSet};
+use crate::query::Value;
+use crate::schema::{ConflictStrategy, CustomResolverId};
+use crate::wal::HlcTimestamp;
 
 use super::authority::{MergeContext, SyncAuthority};
 
-/// Stateless conflict resolver that dispatches merge based on authority.
-pub struct ConflictResolver;
+/// Outcome of resolving a value-level conflict.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResolveOutcome {
+    /// Conflict resolved automatically — apply this value.
+    Resolved(Value),
+    /// No automatic resolution available (e.g. a `Custom` strategy whose
+    /// resolver is not registered). Both versions are returned so the
+    /// caller can surface the conflict to the application.
+    Conflicted { local: Value, remote: Value },
+}
+
+/// A function-like object that merges two field values into one.
+///
+/// Implemented for any `Fn(Value, Value) -> Value + Send + Sync` via the
+/// blanket impl below, so callers can register a closure directly.
+pub trait CustomResolverFn: Send + Sync {
+    fn merge(&self, local: Value, remote: Value) -> Value;
+}
+
+impl<F> CustomResolverFn for F
+where
+    F: Fn(Value, Value) -> Value + Send + Sync,
+{
+    fn merge(&self, local: Value, remote: Value) -> Value {
+        (self)(local, remote)
+    }
+}
+
+/// Conflict resolver.
+///
+/// Stateless for the CRDT-level static methods; carries a registry of
+/// custom merge functions for the value-level API.
+#[derive(Default, Clone)]
+pub struct ConflictResolver {
+    custom_resolvers: HashMap<CustomResolverId, Arc<dyn CustomResolverFn>>,
+}
+
+impl std::fmt::Debug for ConflictResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConflictResolver")
+            .field(
+                "custom_resolvers",
+                &self.custom_resolvers.keys().collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
 
 impl ConflictResolver {
+    /// Construct a resolver with no registered custom merge functions.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a custom merge function under the given id. Replaces any
+    /// previously registered resolver with the same id.
+    ///
+    /// The id is the [`CustomResolverId`] referenced by
+    /// [`ConflictStrategy::Custom`] in the schema. Resolvers can be
+    /// registered after the schema is loaded — fields whose resolver is
+    /// not yet registered surface as [`ResolveOutcome::Conflicted`].
+    pub fn register<F>(&mut self, id: impl Into<CustomResolverId>, resolver: F)
+    where
+        F: Fn(Value, Value) -> Value + Send + Sync + 'static,
+    {
+        self.custom_resolvers.insert(id.into(), Arc::new(resolver));
+    }
+
+    /// Returns `true` if a resolver is registered under the given id.
+    pub fn has_resolver(&self, id: &CustomResolverId) -> bool {
+        self.custom_resolvers.contains_key(id)
+    }
+
+    /// Resolve a value-level conflict according to the given per-field
+    /// [`ConflictStrategy`].
+    ///
+    /// - `LastWriteWins`: higher HLC wins; ties broken by higher
+    ///   `device_id` for cross-device determinism.
+    /// - `ServerAuthority`: remote always wins, regardless of HLC.
+    /// - `Custom(id)`: invokes the registered merge function. If no
+    ///   resolver is registered, returns [`ResolveOutcome::Conflicted`].
+    /// - `Crdt(_)`: not handled at the value level — CRDT fields keep
+    ///   their per-device metadata and merge through the typed methods
+    ///   (`resolve_lww` / `resolve_counter` / `resolve_orset`). For a
+    ///   `Crdt` strategy this method falls back to LWW-by-HLC semantics
+    ///   so callers operating on a flattened `Value` still get a
+    ///   sensible deterministic result.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_value(
+        &self,
+        strategy: &ConflictStrategy,
+        local: Value,
+        local_hlc: HlcTimestamp,
+        local_device: u128,
+        remote: Value,
+        remote_hlc: HlcTimestamp,
+        remote_device: u128,
+    ) -> ResolveOutcome {
+        match strategy {
+            ConflictStrategy::LastWriteWins | ConflictStrategy::Crdt(_) => {
+                ResolveOutcome::Resolved(lww_pick(
+                    local,
+                    local_hlc,
+                    local_device,
+                    remote,
+                    remote_hlc,
+                    remote_device,
+                ))
+            }
+            ConflictStrategy::ServerAuthority => {
+                // The server (remote) is authoritative — its value wins
+                // regardless of timestamps.
+                let _ = (local, local_hlc, local_device, remote_hlc, remote_device);
+                ResolveOutcome::Resolved(remote)
+            }
+            ConflictStrategy::Custom(id) => match self.custom_resolvers.get(id) {
+                Some(resolver) => ResolveOutcome::Resolved(resolver.merge(local, remote)),
+                None => ResolveOutcome::Conflicted { local, remote },
+            },
+        }
+    }
+
+    // -- existing CRDT-level dispatch (v0.1.0 API, unchanged) -----------
+
     /// Resolve a conflict between two LWW registers.
     pub fn resolve_lww<T: Clone>(
         local: &mut LwwRegister<T>,
@@ -43,11 +172,7 @@ impl ConflictResolver {
     /// Under `RemoteAuthority` with a remote source, the remote's per-device
     /// deltas replace the local deltas entirely. This discards un-synced
     /// local increments — by design, since the server is the source of truth.
-    pub fn resolve_counter(
-        local: &mut Counter,
-        remote: &Counter,
-        ctx: &MergeContext,
-    ) {
+    pub fn resolve_counter(local: &mut Counter, remote: &Counter, ctx: &MergeContext) {
         match (ctx.authority, ctx.is_remote) {
             (SyncAuthority::RemoteAuthority, true) => {
                 *local = remote.clone();
@@ -73,6 +198,30 @@ impl ConflictResolver {
             }
             _ => {
                 local.merge(remote);
+            }
+        }
+    }
+}
+
+/// Pick between two values by HLC, breaking ties on device id so all
+/// replicas converge to the same winner.
+fn lww_pick(
+    local: Value,
+    local_hlc: HlcTimestamp,
+    local_device: u128,
+    remote: Value,
+    remote_hlc: HlcTimestamp,
+    remote_device: u128,
+) -> Value {
+    use std::cmp::Ordering;
+    match remote_hlc.cmp(&local_hlc) {
+        Ordering::Greater => remote,
+        Ordering::Less => local,
+        Ordering::Equal => {
+            if remote_device > local_device {
+                remote
+            } else {
+                local
             }
         }
     }
@@ -111,11 +260,7 @@ mod tests {
         let mut local = LwwRegister::new("local", ts(200, 0), DEVICE_A);
         let remote = LwwRegister::new("remote", ts(100, 0), DEVICE_B);
 
-        ConflictResolver::resolve_lww(
-            &mut local,
-            &remote,
-            &remote_ctx(SyncAuthority::LocalFirst),
-        );
+        ConflictResolver::resolve_lww(&mut local, &remote, &remote_ctx(SyncAuthority::LocalFirst));
         // Local has higher timestamp, CRDT merge keeps local.
         assert_eq!(*local.value(), "local");
     }
@@ -154,11 +299,7 @@ mod tests {
         let mut local = LwwRegister::new("local", ts(200, 0), DEVICE_A);
         let remote = LwwRegister::new("remote", ts(100, 0), DEVICE_B);
 
-        ConflictResolver::resolve_lww(
-            &mut local,
-            &remote,
-            &remote_ctx(SyncAuthority::RemoteFirst),
-        );
+        ConflictResolver::resolve_lww(&mut local, &remote, &remote_ctx(SyncAuthority::RemoteFirst));
         assert_eq!(*local.value(), "local");
     }
 
@@ -251,6 +392,138 @@ mod tests {
         assert!(!local.contains(&"apple"));
         assert!(!local.contains(&"cherry"));
         assert!(local.contains(&"banana"));
+    }
+
+    // -- Value-level resolver (per-field ConflictStrategy) ---------------
+
+    use crate::query::Value;
+    use crate::schema::{ConflictStrategy, CrdtKind, CustomResolverId};
+
+    #[test]
+    fn value_lww_picks_higher_hlc() {
+        let r = ConflictResolver::new();
+        let out = r.resolve_value(
+            &ConflictStrategy::LastWriteWins,
+            Value::Int(1),
+            ts(100, 0),
+            DEVICE_A,
+            Value::Int(2),
+            ts(200, 0),
+            DEVICE_B,
+        );
+        assert_eq!(out, ResolveOutcome::Resolved(Value::Int(2)));
+    }
+
+    #[test]
+    fn value_lww_tie_breaks_on_higher_device_id() {
+        let r = ConflictResolver::new();
+        let out = r.resolve_value(
+            &ConflictStrategy::LastWriteWins,
+            Value::Int(1),
+            ts(100, 0),
+            DEVICE_A,
+            Value::Int(2),
+            ts(100, 0),
+            DEVICE_B,
+        );
+        assert_eq!(out, ResolveOutcome::Resolved(Value::Int(2)));
+    }
+
+    #[test]
+    fn value_server_authority_returns_remote() {
+        let r = ConflictResolver::new();
+        let out = r.resolve_value(
+            &ConflictStrategy::ServerAuthority,
+            Value::Int(99),
+            ts(9999, 0), // local has higher HLC, doesn't matter
+            DEVICE_A,
+            Value::Int(1),
+            ts(1, 0),
+            DEVICE_B,
+        );
+        assert_eq!(out, ResolveOutcome::Resolved(Value::Int(1)));
+    }
+
+    #[test]
+    fn value_custom_resolver_invoked_when_registered() {
+        let mut r = ConflictResolver::new();
+        r.register("max_int", |a, b| match (&a, &b) {
+            (Value::Int(x), Value::Int(y)) => Value::Int((*x).max(*y)),
+            _ => b,
+        });
+        let strategy = ConflictStrategy::Custom(CustomResolverId::new("max_int"));
+        let out = r.resolve_value(
+            &strategy,
+            Value::Int(7),
+            ts(100, 0),
+            DEVICE_A,
+            Value::Int(3),
+            ts(200, 0),
+            DEVICE_B,
+        );
+        assert_eq!(out, ResolveOutcome::Resolved(Value::Int(7)));
+    }
+
+    #[test]
+    fn value_custom_resolver_missing_yields_conflicted() {
+        let r = ConflictResolver::new();
+        let strategy = ConflictStrategy::Custom(CustomResolverId::new("missing"));
+        let out = r.resolve_value(
+            &strategy,
+            Value::String("a".into()),
+            ts(100, 0),
+            DEVICE_A,
+            Value::String("b".into()),
+            ts(200, 0),
+            DEVICE_B,
+        );
+        assert_eq!(
+            out,
+            ResolveOutcome::Conflicted {
+                local: Value::String("a".into()),
+                remote: Value::String("b".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn value_crdt_strategy_falls_back_to_lww_at_value_level() {
+        // Crdt fields normally merge through the typed CRDT methods.
+        // When called via resolve_value (e.g. on a flattened document
+        // representation) we still need a deterministic answer — pick
+        // by HLC.
+        let r = ConflictResolver::new();
+        let out = r.resolve_value(
+            &ConflictStrategy::Crdt(CrdtKind::LwwRegister),
+            Value::String("local".into()),
+            ts(100, 0),
+            DEVICE_A,
+            Value::String("remote".into()),
+            ts(200, 0),
+            DEVICE_B,
+        );
+        assert_eq!(
+            out,
+            ResolveOutcome::Resolved(Value::String("remote".into()))
+        );
+    }
+
+    #[test]
+    fn register_replaces_previous_resolver() {
+        let mut r = ConflictResolver::new();
+        r.register("k", |_, _| Value::Int(1));
+        r.register("k", |_, _| Value::Int(2));
+        assert!(r.has_resolver(&CustomResolverId::new("k")));
+        let out = r.resolve_value(
+            &ConflictStrategy::Custom(CustomResolverId::new("k")),
+            Value::Int(0),
+            ts(0, 0),
+            DEVICE_A,
+            Value::Int(0),
+            ts(0, 0),
+            DEVICE_B,
+        );
+        assert_eq!(out, ResolveOutcome::Resolved(Value::Int(2)));
     }
 
     #[test]
