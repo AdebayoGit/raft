@@ -42,6 +42,16 @@ android {
             jniLibs.srcDirs("src/main/jniLibs")
         }
     }
+
+    // Build the JNI shim (`libraftdb-jni.so`) from src/main/cpp via
+    // CMake. It links against the pre-built `libraftdb.so` imported from
+    // jniLibs and exports `Java_com_raftdb_RaftDb_native*` symbols.
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 }
 
 dependencies {

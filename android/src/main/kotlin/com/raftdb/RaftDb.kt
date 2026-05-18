@@ -6,33 +6,49 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Kotlin wrapper around the native `libraftdb.so` C API.
  *
- * All blocking JNI calls are dispatched on [Dispatchers.IO].
- * The database handle is reference-counted internally by the native
- * library; [close] releases the Kotlin side's reference.
+ * Two complementary surfaces are exposed:
  *
- * Usage:
+ * 1. **Raw KV** — [put]/[get]/[delete]/[observe] take `ByteArray` keys
+ *    and values. The store is byte-addressed; callers manage their
+ *    own key namespacing.
+ *
+ * 2. **Typed collections** — [collectionPut]/[collectionPutAuto]/
+ *    [collectionGet]/[collectionDelete]/[collectionCount]/
+ *    [collectionListIds] address documents by `Long` (uint64) id in
+ *    Raft's typed document store. [executeQuery] / [observeCollection] /
+ *    [observeQuery] / [beginTransaction] / [withTransaction] complete
+ *    the typed surface.
+ *
+ * The two surfaces address different storage namespaces. Pick one per
+ * collection.
+ *
+ * All blocking JNI calls are dispatched on [Dispatchers.IO].
+ *
  * ```kotlin
  * val db = RaftDb.open("/data/data/com.example/files/my.db")
+ *
+ * // Raw KV
  * db.put("user:1".toByteArray(), json.toByteArray())
- * val value = db.get("user:1".toByteArray())
- * db.delete("user:1".toByteArray())
+ *
+ * // Typed
+ * val id = db.collectionPutAuto("users", userJson)
+ * db.observeCollection("users").collect { event -> /* MutationEvent */ }
+ *
  * db.close()
  * ```
  */
 class RaftDb private constructor(private val handle: Long) : AutoCloseable {
 
     private val closed = AtomicBoolean(false)
-    private val observerIdGen = AtomicLong(0)
 
-    // -- Public API ----------------------------------------------------------
+    // ── Raw KV ─────────────────────────────────────────────────────────
 
     /**
-     * Insert or update a key-value pair.
+     * Insert or update a raw-KV pair.
      *
      * @throws RaftError on native failure.
      * @throws IllegalStateException if the database is closed.
@@ -46,7 +62,7 @@ class RaftDb private constructor(private val handle: Long) : AutoCloseable {
     }
 
     /**
-     * Look up a key.
+     * Look up a raw-KV key.
      *
      * @return the value bytes, or `null` if the key does not exist.
      * @throws RaftError on native failure (other than not-found).
@@ -60,10 +76,7 @@ class RaftDb private constructor(private val handle: Long) : AutoCloseable {
     }
 
     /**
-     * Delete a key. Deleting a non-existent key is not an error.
-     *
-     * @throws RaftError on native failure.
-     * @throws IllegalStateException if the database is closed.
+     * Delete a raw-KV key. Deleting a non-existent key is not an error.
      */
     suspend fun delete(key: ByteArray) {
         ensureOpen()
@@ -76,35 +89,215 @@ class RaftDb private constructor(private val handle: Long) : AutoCloseable {
     /**
      * Observe changes to a key prefix as a [Flow].
      *
-     * Emits a [QueryResult] every time a key matching [prefix] is written
-     * or deleted. The first emission is the current snapshot.
-     *
-     * The flow completes when the collector is cancelled or the database
-     * is closed.
+     * Emits the current snapshot once, then completes when the
+     * collector is cancelled. Backed by raw `rft_get` — this stub
+     * predates the proper callback-based observer and remains for
+     * back-compat. Use [observeCollection] for typed-collection
+     * notifications.
      */
     fun observe(prefix: ByteArray): Flow<QueryResult> = callbackFlow {
         ensureOpen()
-        val observerId = observerIdGen.incrementAndGet()
-
-        // Initial snapshot
         val initial = withContext(Dispatchers.IO) {
             nativeGet(handle, prefix, prefix.size)
         }
         send(QueryResult(prefix, initial))
+        awaitClose { /* nothing to unregister for this stub */ }
+    }
 
-        // Register a polling observer — real impl would use native callbacks.
-        // For now this is a placeholder that keeps the flow open until
-        // cancellation, suitable for wiring up a native callback later.
-        awaitClose {
-            // Unregister observer when collector cancels.
-            // Future: nativeUnregisterObserver(handle, observerId)
+    // ── Typed Collections ──────────────────────────────────────────────
+
+    /**
+     * Insert or update a document in `collection`. The document JSON's
+     * `id` field is honoured.
+     */
+    suspend fun collectionPut(collection: String, documentJson: ByteArray) {
+        ensureOpen()
+        withContext(Dispatchers.IO) {
+            val code = nativeCollectionPut(handle, collection, documentJson)
+            RaftError.check(code)
         }
     }
 
     /**
-     * Close the database and release the native handle.
+     * Insert a document into `collection`, letting the engine assign a
+     * fresh document id. Returns the assigned id.
+     */
+    suspend fun collectionPutAuto(collection: String, documentJson: ByteArray): Long {
+        ensureOpen()
+        return withContext(Dispatchers.IO) {
+            val outCode = IntArray(1)
+            val docId = nativeCollectionPutAuto(handle, collection, documentJson, outCode)
+            RaftError.check(outCode[0])
+            docId
+        }
+    }
+
+    /**
+     * Fetch a document by id from `collection`. Returns its raw JSON
+     * bytes, or `null` if no document with that id exists.
+     */
+    suspend fun collectionGet(collection: String, docId: Long): ByteArray? {
+        ensureOpen()
+        return withContext(Dispatchers.IO) {
+            val outCode = IntArray(1)
+            val bytes = nativeCollectionGet(handle, collection, docId, outCode)
+            RaftError.check(outCode[0])
+            bytes
+        }
+    }
+
+    /**
+     * Delete a document by id from `collection`. Not an error if the
+     * id does not exist.
+     */
+    suspend fun collectionDelete(collection: String, docId: Long) {
+        ensureOpen()
+        withContext(Dispatchers.IO) {
+            val code = nativeCollectionDelete(handle, collection, docId)
+            RaftError.check(code)
+        }
+    }
+
+    /**
+     * Number of documents currently in `collection` (typed namespace).
+     */
+    suspend fun collectionCount(collection: String): Long {
+        ensureOpen()
+        return withContext(Dispatchers.IO) {
+            val outCode = IntArray(1)
+            val count = nativeCollectionCount(handle, collection, outCode)
+            RaftError.check(outCode[0])
+            count
+        }
+    }
+
+    /**
+     * All document ids currently in `collection` (typed namespace),
+     * sorted ascending.
+     */
+    suspend fun collectionListIds(collection: String): LongArray {
+        ensureOpen()
+        return withContext(Dispatchers.IO) {
+            val outCode = IntArray(1)
+            val ids = nativeCollectionListIds(handle, collection, outCode)
+            RaftError.check(outCode[0])
+            ids ?: LongArray(0)
+        }
+    }
+
+    // ── Queries ────────────────────────────────────────────────────────
+
+    /**
+     * Execute a predicate query (JSON-encoded) and return each
+     * matching document as raw JSON bytes.
+     */
+    suspend fun executeQuery(queryJson: ByteArray): List<ByteArray> {
+        ensureOpen()
+        return withContext(Dispatchers.IO) {
+            val outCode = IntArray(1)
+            val docs = nativeQueryExecute(handle, queryJson, outCode)
+            RaftError.check(outCode[0])
+            docs?.toList() ?: emptyList()
+        }
+    }
+
+    // ── Observation ────────────────────────────────────────────────────
+
+    /**
+     * Observe every insert / update / delete on `collection`. Emits a
+     * [MutationEvent] per change.
      *
-     * Safe to call multiple times; subsequent calls are no-ops.
+     * The Flow completes when the collector is cancelled. The native
+     * subscription is cleaned up automatically.
+     */
+    fun observeCollection(collection: String): Flow<MutationEvent> = callbackFlow {
+        ensureOpen()
+        val callback = RaftObserverCallback { json ->
+            try {
+                trySend(MutationEvent.fromJson(json))
+            } catch (e: Throwable) {
+                // Swallow parse errors so a malformed event doesn't kill the stream.
+            }
+        }
+        val outCode = IntArray(1)
+        val pair = nativeObserveCollection(handle, collection, callback, outCode)
+        if (pair == null || outCode[0] != 0) {
+            close(RaftError.fromCode(outCode[0]) ?: RaftError.IoError())
+            return@callbackFlow
+        }
+        val subId = pair[0]
+        val ctxAddr = pair[1]
+        awaitClose {
+            nativeUnobserve(handle, subId, ctxAddr)
+        }
+    }
+
+    /**
+     * Observe a live query. Emits a [QueryDiff] immediately with the
+     * initial snapshot, then again every time the result set changes.
+     */
+    fun observeQuery(queryJson: ByteArray): Flow<QueryDiff> = callbackFlow {
+        ensureOpen()
+        val callback = RaftObserverCallback { json ->
+            try {
+                trySend(QueryDiff.fromJson(json))
+            } catch (e: Throwable) {
+                // Ignore malformed events.
+            }
+        }
+        val outCode = IntArray(1)
+        val pair = nativeObserveQueryHandle(handle, queryJson, callback, outCode)
+        if (pair == null || outCode[0] != 0) {
+            close(RaftError.fromCode(outCode[0]) ?: RaftError.IoError())
+            return@callbackFlow
+        }
+        val subId = pair[0]
+        val ctxAddr = pair[1]
+        awaitClose {
+            nativeUnobserve(handle, subId, ctxAddr)
+        }
+    }
+
+    // ── Transactions ───────────────────────────────────────────────────
+
+    /**
+     * Begin a new transaction. The caller takes ownership of the
+     * returned [RaftTransaction] and must end it with `commit()` or
+     * `rollback()`.
+     */
+    suspend fun beginTransaction(): RaftTransaction {
+        ensureOpen()
+        return withContext(Dispatchers.IO) {
+            val outCode = IntArray(1)
+            val txnHandle = nativeTransactionBegin(handle, outCode)
+            RaftError.check(outCode[0])
+            if (txnHandle == 0L) throw RaftError.InvalidHandle()
+            RaftTransaction(txnHandle)
+        }
+    }
+
+    /**
+     * Run [block] inside a transaction. If it returns normally, the
+     * transaction is committed; if it throws, it is rolled back and
+     * the error is rethrown.
+     */
+    suspend fun <T> withTransaction(block: suspend (RaftTransaction) -> T): T {
+        val txn = beginTransaction()
+        try {
+            val result = block(txn)
+            txn.commit()
+            return result
+        } catch (e: Throwable) {
+            txn.rollback()
+            throw e
+        }
+    }
+
+    // ── Lifecycle ──────────────────────────────────────────────────────
+
+    /**
+     * Close the database and release the native handle. Safe to call
+     * multiple times; subsequent calls are no-ops.
      */
     override fun close() {
         if (closed.compareAndSet(false, true)) {
@@ -112,18 +305,21 @@ class RaftDb private constructor(private val handle: Long) : AutoCloseable {
         }
     }
 
-    // -- Internals -----------------------------------------------------------
-
     private fun ensureOpen() {
         check(!closed.get()) { "RaftDb is already closed" }
     }
 
-    // -- JNI declarations ----------------------------------------------------
+    // ── JNI declarations ───────────────────────────────────────────────
 
     companion object {
 
         init {
+            // `libraftdb.so` is the Rust core; `libraftdb-jni.so` is the
+            // JNI shim built from `src/main/cpp` and depends on the core
+            // (auto-loaded by the dynamic linker, but loading explicitly
+            // makes the dependency unambiguous).
             System.loadLibrary("raftdb")
+            System.loadLibrary("raftdb-jni")
         }
 
         /**
@@ -152,10 +348,13 @@ class RaftDb private constructor(private val handle: Long) : AutoCloseable {
             return RaftDb(result)
         }
 
-        // -- Native methods (implemented in C/Rust JNI layer) ----------------
+        // ── Native methods (implemented in libraftdb-jni.so) ──────────
 
         @JvmStatic
         private external fun nativeOpen(path: String): Long
+
+        @JvmStatic
+        private external fun nativeClose(handle: Long)
 
         @JvmStatic
         private external fun nativePut(
@@ -180,16 +379,132 @@ class RaftDb private constructor(private val handle: Long) : AutoCloseable {
             keyLen: Int,
         ): Int
 
+        // Typed collections
         @JvmStatic
-        private external fun nativeClose(handle: Long)
+        private external fun nativeCollectionPut(
+            handle: Long,
+            collection: String,
+            documentJson: ByteArray,
+        ): Int
+
+        @JvmStatic
+        private external fun nativeCollectionPutAuto(
+            handle: Long,
+            collection: String,
+            documentJson: ByteArray,
+            outCode: IntArray,
+        ): Long
+
+        @JvmStatic
+        private external fun nativeCollectionGet(
+            handle: Long,
+            collection: String,
+            docId: Long,
+            outCode: IntArray,
+        ): ByteArray?
+
+        @JvmStatic
+        private external fun nativeCollectionDelete(
+            handle: Long,
+            collection: String,
+            docId: Long,
+        ): Int
+
+        @JvmStatic
+        private external fun nativeCollectionCount(
+            handle: Long,
+            collection: String,
+            outCode: IntArray,
+        ): Long
+
+        @JvmStatic
+        private external fun nativeCollectionListIds(
+            handle: Long,
+            collection: String,
+            outCode: IntArray,
+        ): LongArray?
+
+        // Queries
+        @JvmStatic
+        private external fun nativeQueryExecute(
+            handle: Long,
+            queryJson: ByteArray,
+            outCode: IntArray,
+        ): Array<ByteArray>?
+
+        // Transactions
+        @JvmStatic
+        internal external fun nativeTransactionBegin(
+            handle: Long,
+            outCode: IntArray,
+        ): Long
+
+        @JvmStatic
+        internal external fun nativeTransactionGet(
+            txnHandle: Long,
+            collection: String,
+            docId: Long,
+            outCode: IntArray,
+        ): ByteArray?
+
+        @JvmStatic
+        internal external fun nativeTransactionPut(
+            txnHandle: Long,
+            collection: String,
+            documentJson: ByteArray,
+        ): Int
+
+        @JvmStatic
+        internal external fun nativeTransactionDelete(
+            txnHandle: Long,
+            collection: String,
+            docId: Long,
+        ): Int
+
+        @JvmStatic
+        internal external fun nativeTransactionCommit(txnHandle: Long): Int
+
+        @JvmStatic
+        internal external fun nativeTransactionRollback(txnHandle: Long)
+
+        // Observation
+        @JvmStatic
+        private external fun nativeObserveCollection(
+            handle: Long,
+            collection: String,
+            callback: RaftObserverCallback,
+            outCode: IntArray,
+        ): LongArray?
+
+        @JvmStatic
+        private external fun nativeObserveQueryHandle(
+            handle: Long,
+            queryJson: ByteArray,
+            callback: RaftObserverCallback,
+            outCode: IntArray,
+        ): LongArray?
+
+        @JvmStatic
+        private external fun nativeUnobserve(
+            handle: Long,
+            subId: Long,
+            ctxAddr: Long,
+        ): Int
     }
 }
 
 /**
- * Result emitted by [RaftDb.observe].
- *
- * @property key The key (or prefix) that was observed.
- * @property value The current value, or `null` if deleted / not found.
+ * Callback invoked by the JNI shim with a JSON-encoded event payload.
+ * Implemented in `RaftDb.observeCollection` / `RaftDb.observeQuery`
+ * to feed the returned [Flow].
+ */
+internal fun interface RaftObserverCallback {
+    fun onEvent(eventJson: String)
+}
+
+/**
+ * Legacy result type returned by [RaftDb.observe] (the raw-KV stub
+ * observer). For typed-collection notifications, use [MutationEvent].
  */
 data class QueryResult(
     val key: ByteArray,
