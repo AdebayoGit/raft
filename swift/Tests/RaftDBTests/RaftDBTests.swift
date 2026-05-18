@@ -127,25 +127,88 @@ final class RaftErrorTests: XCTestCase {
 
 final class QueryDiffTests: XCTestCase {
 
-    func testQueryDiffHoldsKeyAndValue() {
-        let key = Data("test-key".utf8)
-        let value = Data("test-value".utf8)
-        let diff = QueryDiff(key: key, value: value)
-
-        XCTAssertEqual(diff.key, key)
-        XCTAssertEqual(diff.value, value)
+    func testEmptyByDefault() {
+        let diff = QueryDiff()
+        XCTAssertTrue(diff.isEmpty)
+        XCTAssertEqual(diff.added.count, 0)
+        XCTAssertEqual(diff.removed.count, 0)
+        XCTAssertEqual(diff.updated.count, 0)
     }
 
-    func testQueryDiffWithNilValue() {
-        let diff = QueryDiff(key: Data("key".utf8), value: nil)
-        XCTAssertNil(diff.value)
+    func testIsEmptyWhenAllBucketsEmpty() {
+        XCTAssertTrue(QueryDiff(added: [], removed: [], updated: []).isEmpty)
     }
 
-    func testQueryDiffWithEmptyValue() {
-        // Empty-but-present value (Data of length zero) is distinct from nil.
-        let diff = QueryDiff(key: Data("key".utf8), value: Data())
-        XCTAssertNotNil(diff.value)
-        XCTAssertEqual(diff.value?.count, 0)
+    func testIsNotEmptyWhenAnyBucketHasItems() {
+        let doc = Data(#"{"id":1}"#.utf8)
+        XCTAssertFalse(QueryDiff(added: [doc]).isEmpty)
+        XCTAssertFalse(QueryDiff(removed: [doc]).isEmpty)
+        XCTAssertFalse(QueryDiff(updated: [doc]).isEmpty)
+    }
+
+    func testParseFromJSON() throws {
+        let payload = #"""
+        {
+          "added":   [{"id": 1, "name": "a"}],
+          "removed": [],
+          "updated": [{"id": 2, "name": "b"}, {"id": 3, "name": "c"}]
+        }
+        """#
+        let diff = try QueryDiff.parse(Data(payload.utf8))
+        XCTAssertEqual(diff.added.count, 1)
+        XCTAssertEqual(diff.removed.count, 0)
+        XCTAssertEqual(diff.updated.count, 2)
+
+        // Each element is preserved as raw JSON bytes
+        let decoded = try JSONSerialization.jsonObject(with: diff.added[0]) as? [String: Any]
+        XCTAssertEqual(decoded?["name"] as? String, "a")
+    }
+
+    func testParseMissingKeysProducesEmptyArrays() throws {
+        let payload = #"{"added": [{"id": 1}]}"#
+        let diff = try QueryDiff.parse(Data(payload.utf8))
+        XCTAssertEqual(diff.added.count, 1)
+        XCTAssertEqual(diff.removed.count, 0)
+        XCTAssertEqual(diff.updated.count, 0)
+    }
+
+    func testParseInvalidJsonThrows() {
+        XCTAssertThrowsError(try QueryDiff.parse(Data("not-json".utf8)))
+    }
+}
+
+// MARK: - MutationEvent Tests
+
+final class MutationEventTests: XCTestCase {
+
+    func testDecodeFromJSON() throws {
+        let payload = #"""
+        {
+          "collection": "users",
+          "doc_id": 42,
+          "mutation_type": "Insert",
+          "origin": "Local"
+        }
+        """#
+        let event = try JSONDecoder().decode(MutationEvent.self, from: Data(payload.utf8))
+        XCTAssertEqual(event.collection, "users")
+        XCTAssertEqual(event.docId, 42)
+        XCTAssertEqual(event.mutationType, .insert)
+        XCTAssertEqual(event.origin, .local)
+    }
+
+    func testRoundTripAllKinds() throws {
+        for kind in [MutationEvent.Kind.insert, .update, .delete] {
+            let event = MutationEvent(
+                collection: "c",
+                docId: 1,
+                mutationType: kind,
+                origin: .remote
+            )
+            let data = try JSONEncoder().encode(event)
+            let decoded = try JSONDecoder().decode(MutationEvent.self, from: data)
+            XCTAssertEqual(decoded, event)
+        }
     }
 }
 

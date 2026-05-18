@@ -165,17 +165,82 @@ impl SSTableReader {
     }
 
     /// Search a single data block for an exact key match.
+    ///
+    /// Streams over the block bytes without materialising a `Vec` of
+    /// owned key/value pairs. Only the matching value is allocated; all
+    /// other entries are skipped in place. This avoids the per-`get`
+    /// allocation storm that was previously the dominant cost for
+    /// bloom-positive lookups.
     fn search_block(
         &self,
         ie: &IndexEntry,
         key: &[u8],
     ) -> Result<Option<Option<Vec<u8>>>, SSTableError> {
-        let entries = self.read_block(ie)?;
-        for (k, v) in entries {
-            match k.as_slice().cmp(key) {
-                std::cmp::Ordering::Equal => return Ok(Some(v)),
-                std::cmp::Ordering::Greater => return Ok(None), // past it — sorted
-                std::cmp::Ordering::Less => continue,
+        let start = ie.offset as usize;
+        let end = start + ie.length as usize;
+        if end > self.data.len() {
+            return Err(SSTableError::CorruptBlock {
+                offset: ie.offset,
+                reason: "block extends past file".to_string(),
+            });
+        }
+
+        let mut cursor = &self.data[start..end];
+        while cursor.len() >= 5 {
+            let key_len = u32::from_be_bytes(cursor[0..4].try_into().unwrap()) as usize;
+            let value_flag = cursor[4];
+            cursor = &cursor[5..];
+
+            match value_flag {
+                1 => {
+                    if cursor.len() < 4 {
+                        return Err(SSTableError::CorruptBlock {
+                            offset: ie.offset,
+                            reason: "truncated value_len".to_string(),
+                        });
+                    }
+                    let value_len = u32::from_be_bytes(cursor[0..4].try_into().unwrap()) as usize;
+                    cursor = &cursor[4..];
+                    if cursor.len() < key_len + value_len {
+                        return Err(SSTableError::CorruptBlock {
+                            offset: ie.offset,
+                            reason: "truncated key/value".to_string(),
+                        });
+                    }
+                    let entry_key = &cursor[..key_len];
+                    match entry_key.cmp(key) {
+                        std::cmp::Ordering::Equal => {
+                            let value = cursor[key_len..key_len + value_len].to_vec();
+                            return Ok(Some(Some(value)));
+                        }
+                        std::cmp::Ordering::Greater => return Ok(None),
+                        std::cmp::Ordering::Less => {
+                            cursor = &cursor[key_len + value_len..];
+                        }
+                    }
+                }
+                0 => {
+                    if cursor.len() < key_len {
+                        return Err(SSTableError::CorruptBlock {
+                            offset: ie.offset,
+                            reason: "truncated tombstone key".to_string(),
+                        });
+                    }
+                    let entry_key = &cursor[..key_len];
+                    match entry_key.cmp(key) {
+                        std::cmp::Ordering::Equal => return Ok(Some(None)),
+                        std::cmp::Ordering::Greater => return Ok(None),
+                        std::cmp::Ordering::Less => {
+                            cursor = &cursor[key_len..];
+                        }
+                    }
+                }
+                other => {
+                    return Err(SSTableError::CorruptBlock {
+                        offset: ie.offset,
+                        reason: format!("unknown value_flag: {other}"),
+                    });
+                }
             }
         }
         Ok(None)

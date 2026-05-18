@@ -7,8 +7,11 @@ import 'package:ffi/ffi.dart';
 
 import 'raft_collection.dart';
 import 'raft_db_bindings.dart' as bindings;
+import 'raft_transaction.dart';
 
 /// Loads the native RaftDB library for the current platform.
+ffi.DynamicLibrary openRaftLib() => _openLib();
+
 ffi.DynamicLibrary _openLib() {
   if (Platform.isAndroid || Platform.isLinux) {
     return ffi.DynamicLibrary.open('libraftdb.so');
@@ -241,6 +244,287 @@ class RaftDb {
       serialize: serialize,
       deserialize: deserialize,
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Typed-FFI surface (collections, queries, transactions)
+  //
+  // These methods address Raft's typed document store and are distinct
+  // from the raw-KV `put/get/delete` namespace. Documents are addressed
+  // by `int` (UInt64 on the native side); the document's `id` field
+  // must match.
+  // ---------------------------------------------------------------------------
+
+  /// Insert or update a document in `collection`. The document JSON's
+  /// `id` field is honoured.
+  Future<void> collectionPut(String collection, Uint8List documentJson) {
+    _assertOpen();
+    final addr = _address;
+    return Isolate.run(() {
+      final db = bindings.RaftDbBindings(_openLib());
+      final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
+      final cName = collection.toNativeUtf8();
+      final jsonPtr = malloc<ffi.Uint8>(documentJson.length);
+      try {
+        jsonPtr.asTypedList(documentJson.length).setAll(0, documentJson);
+        final code = db.rft_collection_put(
+            handle, cName.cast(), jsonPtr, documentJson.length);
+        if (code != bindings.RftError.RFT_ERROR_OK.value) {
+          throw RaftDbException.fromCode(code);
+        }
+      } finally {
+        malloc.free(cName);
+        malloc.free(jsonPtr);
+      }
+    });
+  }
+
+  /// Insert a document into `collection`, letting the engine assign a
+  /// fresh document id. Returns the assigned id.
+  Future<int> collectionPutAuto(String collection, Uint8List documentJson) {
+    _assertOpen();
+    final addr = _address;
+    return Isolate.run(() {
+      final db = bindings.RaftDbBindings(_openLib());
+      final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
+      final cName = collection.toNativeUtf8();
+      final jsonPtr = malloc<ffi.Uint8>(documentJson.length);
+      final outId = calloc<ffi.Uint64>();
+      try {
+        jsonPtr.asTypedList(documentJson.length).setAll(0, documentJson);
+        final code = db.rft_collection_put_auto(
+            handle, cName.cast(), jsonPtr, documentJson.length, outId);
+        if (code != bindings.RftError.RFT_ERROR_OK.value) {
+          throw RaftDbException.fromCode(code);
+        }
+        return outId.value;
+      } finally {
+        malloc.free(cName);
+        malloc.free(jsonPtr);
+        calloc.free(outId);
+      }
+    });
+  }
+
+  /// Fetch a document by id from `collection`. Returns its raw JSON
+  /// bytes, or `null` if no document with that id exists.
+  Future<Uint8List?> collectionGet(String collection, int docId) {
+    _assertOpen();
+    final addr = _address;
+    return Isolate.run(() {
+      final db = bindings.RaftDbBindings(_openLib());
+      final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
+      final cName = collection.toNativeUtf8();
+      final lenPtr = calloc<ffi.UintPtr>();
+      try {
+        final sizeCode = db.rft_collection_get(
+            handle, cName.cast(), docId, ffi.nullptr, lenPtr);
+        if (sizeCode == bindings.RftError.RFT_ERROR_NOT_FOUND.value) {
+          return null;
+        }
+        if (sizeCode != bindings.RftError.RFT_ERROR_BUFFER_TOO_SMALL.value &&
+            sizeCode != bindings.RftError.RFT_ERROR_OK.value) {
+          throw RaftDbException.fromCode(sizeCode);
+        }
+        final needed = lenPtr.value;
+        final bufPtr = malloc<ffi.Uint8>(needed);
+        try {
+          final readCode = db.rft_collection_get(
+              handle, cName.cast(), docId, bufPtr, lenPtr);
+          if (readCode != bindings.RftError.RFT_ERROR_OK.value) {
+            throw RaftDbException.fromCode(readCode);
+          }
+          return Uint8List.fromList(bufPtr.asTypedList(lenPtr.value));
+        } finally {
+          malloc.free(bufPtr);
+        }
+      } finally {
+        malloc.free(cName);
+        calloc.free(lenPtr);
+      }
+    });
+  }
+
+  /// Delete a document by id from `collection`. Not an error if the id
+  /// does not exist.
+  Future<void> collectionDelete(String collection, int docId) {
+    _assertOpen();
+    final addr = _address;
+    return Isolate.run(() {
+      final db = bindings.RaftDbBindings(_openLib());
+      final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
+      final cName = collection.toNativeUtf8();
+      try {
+        final code = db.rft_collection_delete(handle, cName.cast(), docId);
+        if (code != bindings.RftError.RFT_ERROR_OK.value) {
+          throw RaftDbException.fromCode(code);
+        }
+      } finally {
+        malloc.free(cName);
+      }
+    });
+  }
+
+  /// Number of documents currently in `collection` (typed namespace).
+  Future<int> collectionCount(String collection) {
+    _assertOpen();
+    final addr = _address;
+    return Isolate.run(() {
+      final db = bindings.RaftDbBindings(_openLib());
+      final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
+      final cName = collection.toNativeUtf8();
+      final out = calloc<ffi.UintPtr>();
+      try {
+        final code = db.rft_collection_count(handle, cName.cast(), out);
+        if (code != bindings.RftError.RFT_ERROR_OK.value) {
+          throw RaftDbException.fromCode(code);
+        }
+        return out.value;
+      } finally {
+        malloc.free(cName);
+        calloc.free(out);
+      }
+    });
+  }
+
+  /// All document ids currently in `collection` (typed namespace),
+  /// sorted ascending.
+  Future<List<int>> collectionListIds(String collection) {
+    _assertOpen();
+    final addr = _address;
+    return Isolate.run(() {
+      final db = bindings.RaftDbBindings(_openLib());
+      final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
+      final cName = collection.toNativeUtf8();
+      final lenPtr = calloc<ffi.UintPtr>();
+      try {
+        final sizeCode = db.rft_collection_list_ids(
+            handle, cName.cast(), ffi.nullptr, lenPtr);
+        if (sizeCode != bindings.RftError.RFT_ERROR_BUFFER_TOO_SMALL.value &&
+            sizeCode != bindings.RftError.RFT_ERROR_OK.value) {
+          throw RaftDbException.fromCode(sizeCode);
+        }
+        final needed = lenPtr.value;
+        if (needed == 0) return <int>[];
+        final buf = malloc<ffi.Uint64>(needed);
+        try {
+          final readCode = db.rft_collection_list_ids(
+              handle, cName.cast(), buf, lenPtr);
+          if (readCode != bindings.RftError.RFT_ERROR_OK.value) {
+            throw RaftDbException.fromCode(readCode);
+          }
+          final actual = lenPtr.value;
+          final ids = <int>[];
+          for (var i = 0; i < actual; i++) {
+            ids.add(buf[i]);
+          }
+          return ids;
+        } finally {
+          malloc.free(buf);
+        }
+      } finally {
+        malloc.free(cName);
+        calloc.free(lenPtr);
+      }
+    });
+  }
+
+  /// Execute a predicate query (JSON-encoded) and return each matching
+  /// document as raw JSON bytes.
+  Future<List<Uint8List>> executeQuery(Uint8List queryJson) {
+    _assertOpen();
+    final addr = _address;
+    return Isolate.run(() {
+      final db = bindings.RaftDbBindings(_openLib());
+      final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
+      final jsonPtr = malloc<ffi.Uint8>(queryJson.length);
+      final outResult = calloc<ffi.Pointer<bindings.RaftQueryResult>>();
+      try {
+        jsonPtr.asTypedList(queryJson.length).setAll(0, queryJson);
+        final execCode =
+            db.rft_query_execute(handle, jsonPtr, queryJson.length, outResult);
+        if (execCode != bindings.RftError.RFT_ERROR_OK.value) {
+          throw RaftDbException.fromCode(execCode);
+        }
+        final resultHandle = outResult.value;
+        if (resultHandle == ffi.nullptr) return <Uint8List>[];
+        try {
+          final count = db.rft_query_result_count(resultHandle);
+          final docs = <Uint8List>[];
+          for (var i = 0; i < count; i++) {
+            final lenPtr = calloc<ffi.UintPtr>();
+            try {
+              final sizeCode = db.rft_query_result_get(
+                  resultHandle, i, ffi.nullptr, lenPtr);
+              if (sizeCode !=
+                      bindings.RftError.RFT_ERROR_BUFFER_TOO_SMALL.value &&
+                  sizeCode != bindings.RftError.RFT_ERROR_OK.value) {
+                throw RaftDbException.fromCode(sizeCode);
+              }
+              final needed = lenPtr.value;
+              final bufPtr = malloc<ffi.Uint8>(needed);
+              try {
+                final readCode = db.rft_query_result_get(
+                    resultHandle, i, bufPtr, lenPtr);
+                if (readCode != bindings.RftError.RFT_ERROR_OK.value) {
+                  throw RaftDbException.fromCode(readCode);
+                }
+                docs.add(Uint8List.fromList(bufPtr.asTypedList(lenPtr.value)));
+              } finally {
+                malloc.free(bufPtr);
+              }
+            } finally {
+              calloc.free(lenPtr);
+            }
+          }
+          return docs;
+        } finally {
+          db.rft_query_result_free(resultHandle);
+        }
+      } finally {
+        malloc.free(jsonPtr);
+        calloc.free(outResult);
+      }
+    });
+  }
+
+  /// Begin a new transaction. The caller takes ownership of the returned
+  /// [RaftTransaction] and must end it with `commit` or `rollback`.
+  Future<RaftTransaction> beginTransaction() async {
+    _assertOpen();
+    final addr = _address;
+    final txnAddr = await Isolate.run(() {
+      final db = bindings.RaftDbBindings(_openLib());
+      final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
+      final outTxn = calloc<ffi.Pointer<bindings.RaftTransaction>>();
+      try {
+        final code = db.rft_transaction_begin(handle, outTxn);
+        if (code != bindings.RftError.RFT_ERROR_OK.value) {
+          throw RaftDbException.fromCode(code);
+        }
+        return outTxn.value.address;
+      } finally {
+        calloc.free(outTxn);
+      }
+    });
+    return RaftTransaction.internalNew(txnAddr, _openLib);
+  }
+
+  /// Run `block` inside a transaction. If it returns normally, the
+  /// transaction is committed; if it throws, it is rolled back and the
+  /// error is rethrown.
+  Future<T> withTransaction<T>(
+    Future<T> Function(RaftTransaction txn) block,
+  ) async {
+    final txn = await beginTransaction();
+    try {
+      final result = await block(txn);
+      await txn.commit();
+      return result;
+    } catch (_) {
+      await txn.rollback();
+      rethrow;
+    }
   }
 
   void _assertOpen() {

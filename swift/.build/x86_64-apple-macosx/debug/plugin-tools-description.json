@@ -40,6 +40,10 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftTransaction.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
         },
         {
@@ -53,7 +57,8 @@
       "objects" : [
         "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftCollection.swift.o",
         "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftDB.swift.o",
-        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftError.swift.o"
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftError.swift.o",
+        "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftTransaction.swift.o"
       ],
       "otherArguments" : [
         "-target",
@@ -126,6 +131,10 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftTransaction.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules/RaftDB.swiftmodule"
         }
       ],
@@ -133,7 +142,8 @@
       "sources" : [
         "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftCollection.swift",
         "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftDB.swift",
-        "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftError.swift"
+        "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftError.swift",
+        "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftTransaction.swift"
       ],
       "tempsPath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build",
       "wholeModuleOptimization" : false
@@ -354,6 +364,7 @@
       "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftCollection.swift",
       "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftDB.swift",
       "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftError.swift",
+      "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftTransaction.swift",
       "-I",
       "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/Modules",
       "-target",
@@ -598,6 +609,10 @@
         {
           "kind" : "file",
           "name" : "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftError.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftTransaction.swift"
         }
       ],
       "outputFilePath" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/sources"
@@ -634,6 +649,10 @@
         {
           "kind" : "file",
           "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftError.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftTransaction.swift.o"
         },
         {
           "kind" : "file",

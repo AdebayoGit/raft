@@ -51,7 +51,8 @@ class RaftDbBindings {
       ffi.Pointer<RaftDb> Function(
           ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Uint32>)>();
 
-  /// Close and free a database handle.
+  /// Close and free a database handle. Aborts any pending observer tasks
+  /// before dropping the runtime.
   ///
   /// # Safety
   ///
@@ -71,7 +72,7 @@ class RaftDbBindings {
   late final _rft_close =
       _rft_closePtr.asFunction<void Function(ffi.Pointer<RaftDb>)>();
 
-  /// Insert or update a key-value pair.
+  /// Insert or update a key-value pair on the raw engine.
   ///
   /// # Safety
   ///
@@ -102,7 +103,7 @@ class RaftDbBindings {
       int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Uint8>, int,
           ffi.Pointer<ffi.Uint8>, int)>();
 
-  /// Look up a key.
+  /// Look up a key on the raw engine.
   ///
   /// On success, writes the value into the caller-provided buffer at
   /// `out_value` and sets `*out_len` to the number of bytes written.
@@ -147,7 +148,7 @@ class RaftDbBindings {
       int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Uint8>, int,
           ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.UintPtr>)>();
 
-  /// Delete a key.
+  /// Delete a key on the raw engine.
   ///
   /// Returns [`RftError::Ok`] on success. Deleting a non-existent key is
   /// not an error (it writes a tombstone).
@@ -174,6 +175,617 @@ class RaftDbBindings {
               ffi.UintPtr)>>('rft_delete');
   late final _rft_delete = _rft_deletePtr.asFunction<
       int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Uint8>, int)>();
+
+  /// Insert or update a document in `collection`. The document's `id` field
+  /// is honoured. The same id always maps to the same slot — repeated puts
+  /// overwrite (and bump the internal version).
+  ///
+  /// # Safety
+  ///
+  /// - `db` must be a valid handle returned by [`rft_open`](super::rft_open).
+  /// - `collection` must be a valid null-terminated UTF-8 C string.
+  /// - `doc_json` must be a valid UTF-8 buffer of `doc_json_len` bytes.
+  int rft_collection_put(
+    ffi.Pointer<RaftDb> db,
+    ffi.Pointer<ffi.Char> collection,
+    ffi.Pointer<ffi.Uint8> doc_json,
+    int doc_json_len,
+  ) {
+    return _rft_collection_put(
+      db,
+      collection,
+      doc_json,
+      doc_json_len,
+    );
+  }
+
+  late final _rft_collection_putPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Uint32 Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>,
+              ffi.Pointer<ffi.Uint8>, ffi.UintPtr)>>('rft_collection_put');
+  late final _rft_collection_put = _rft_collection_putPtr.asFunction<
+      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>,
+          ffi.Pointer<ffi.Uint8>, int)>();
+
+  /// Insert a document, letting the database assign a fresh id. Writes the
+  /// assigned id to `*out_doc_id` on success.
+  ///
+  /// # Safety
+  ///
+  /// - All non-null pointers must point to valid memory of the appropriate
+  /// size; `out_doc_id` must be a writable `*mut u64`.
+  int rft_collection_put_auto(
+    ffi.Pointer<RaftDb> db,
+    ffi.Pointer<ffi.Char> collection,
+    ffi.Pointer<ffi.Uint8> doc_json,
+    int doc_json_len,
+    ffi.Pointer<ffi.Uint64> out_doc_id,
+  ) {
+    return _rft_collection_put_auto(
+      db,
+      collection,
+      doc_json,
+      doc_json_len,
+      out_doc_id,
+    );
+  }
+
+  late final _rft_collection_put_autoPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Uint32 Function(
+              ffi.Pointer<RaftDb>,
+              ffi.Pointer<ffi.Char>,
+              ffi.Pointer<ffi.Uint8>,
+              ffi.UintPtr,
+              ffi.Pointer<ffi.Uint64>)>>('rft_collection_put_auto');
+  late final _rft_collection_put_auto = _rft_collection_put_autoPtr.asFunction<
+      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>,
+          ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Uint64>)>();
+
+  /// Fetch a document by id, writing its JSON encoding to `out_buf`. On
+  /// `BufferTooSmall` the required size is written to `*out_len` and no
+  /// bytes are copied.
+  ///
+  /// # Safety
+  ///
+  /// - `db` must be a valid handle.
+  /// - `collection` must be a valid null-terminated UTF-8 C string.
+  /// - `out_buf` must be writable for `*out_len` bytes, or null to query
+  /// the required size.
+  /// - `out_len` must be a valid `*mut usize`.
+  int rft_collection_get(
+    ffi.Pointer<RaftDb> db,
+    ffi.Pointer<ffi.Char> collection,
+    int doc_id,
+    ffi.Pointer<ffi.Uint8> out_buf,
+    ffi.Pointer<ffi.UintPtr> out_len,
+  ) {
+    return _rft_collection_get(
+      db,
+      collection,
+      doc_id,
+      out_buf,
+      out_len,
+    );
+  }
+
+  late final _rft_collection_getPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Uint32 Function(
+              ffi.Pointer<RaftDb>,
+              ffi.Pointer<ffi.Char>,
+              ffi.Uint64,
+              ffi.Pointer<ffi.Uint8>,
+              ffi.Pointer<ffi.UintPtr>)>>('rft_collection_get');
+  late final _rft_collection_get = _rft_collection_getPtr.asFunction<
+      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>, int,
+          ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.UintPtr>)>();
+
+  /// Delete a document. Returns [`RftError::Ok`] whether the document
+  /// existed or not.
+  ///
+  /// # Safety
+  ///
+  /// - `db` must be a valid handle.
+  /// - `collection` must be a valid null-terminated UTF-8 C string.
+  int rft_collection_delete(
+    ffi.Pointer<RaftDb> db,
+    ffi.Pointer<ffi.Char> collection,
+    int doc_id,
+  ) {
+    return _rft_collection_delete(
+      db,
+      collection,
+      doc_id,
+    );
+  }
+
+  late final _rft_collection_deletePtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Uint32 Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>,
+              ffi.Uint64)>>('rft_collection_delete');
+  late final _rft_collection_delete = _rft_collection_deletePtr.asFunction<
+      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>, int)>();
+
+  /// Number of documents in `collection`. Writes the count to `*out_count`.
+  ///
+  /// # Safety
+  ///
+  /// - `db` must be a valid handle.
+  /// - `collection` must be a valid null-terminated UTF-8 C string.
+  /// - `out_count` must be a valid `*mut usize`.
+  int rft_collection_count(
+    ffi.Pointer<RaftDb> db,
+    ffi.Pointer<ffi.Char> collection,
+    ffi.Pointer<ffi.UintPtr> out_count,
+  ) {
+    return _rft_collection_count(
+      db,
+      collection,
+      out_count,
+    );
+  }
+
+  late final _rft_collection_countPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Uint32 Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>,
+              ffi.Pointer<ffi.UintPtr>)>>('rft_collection_count');
+  late final _rft_collection_count = _rft_collection_countPtr.asFunction<
+      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>,
+          ffi.Pointer<ffi.UintPtr>)>();
+
+  /// List all document ids in `collection`, sorted ascending.
+  ///
+  /// Writes up to `*out_len` ids into `out_ids` and sets `*out_len` to
+  /// the number written. If `out_ids` is null or `*out_len` is smaller
+  /// than the total count, returns [`RftError::BufferTooSmall`] and
+  /// `*out_len` holds the required size.
+  ///
+  /// # Safety
+  ///
+  /// - `db` must be a valid handle.
+  /// - `collection` must be a valid null-terminated UTF-8 C string.
+  /// - `out_ids` must be writable for `*out_len * 8` bytes, or null.
+  /// - `out_len` must be a valid `*mut usize`.
+  int rft_collection_list_ids(
+    ffi.Pointer<RaftDb> db,
+    ffi.Pointer<ffi.Char> collection,
+    ffi.Pointer<ffi.Uint64> out_ids,
+    ffi.Pointer<ffi.UintPtr> out_len,
+  ) {
+    return _rft_collection_list_ids(
+      db,
+      collection,
+      out_ids,
+      out_len,
+    );
+  }
+
+  late final _rft_collection_list_idsPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Uint32 Function(
+              ffi.Pointer<RaftDb>,
+              ffi.Pointer<ffi.Char>,
+              ffi.Pointer<ffi.Uint64>,
+              ffi.Pointer<ffi.UintPtr>)>>('rft_collection_list_ids');
+  late final _rft_collection_list_ids = _rft_collection_list_idsPtr.asFunction<
+      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>,
+          ffi.Pointer<ffi.Uint64>, ffi.Pointer<ffi.UintPtr>)>();
+
+  /// Register an observer callback for `collection`. The callback fires
+  /// whenever a document in that collection is inserted, updated, or
+  /// deleted.
+  ///
+  /// Returns a non-zero subscription id via `out_sub_id` on success. Pass
+  /// it to [`rft_unobserve`] to cancel the subscription.
+  ///
+  /// # Safety
+  ///
+  /// - `db` must be a valid handle.
+  /// - `collection` must be a valid null-terminated UTF-8 C string.
+  /// - `callback` must be a valid C function pointer that remains valid
+  /// until [`rft_unobserve`] returns.
+  /// - `user_data` is opaque to Rust; the platform binding is responsible
+  /// for managing its lifetime so it remains valid for the subscription.
+  /// - `out_sub_id` must be a valid `*mut u64`.
+  int rft_observe(
+    ffi.Pointer<RaftDb> db,
+    ffi.Pointer<ffi.Char> collection,
+    RftObserveCallback callback,
+    ffi.Pointer<ffi.Void> user_data,
+    ffi.Pointer<ffi.Uint64> out_sub_id,
+  ) {
+    return _rft_observe(
+      db,
+      collection,
+      callback,
+      user_data,
+      out_sub_id,
+    );
+  }
+
+  late final _rft_observePtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Uint32 Function(
+              ffi.Pointer<RaftDb>,
+              ffi.Pointer<ffi.Char>,
+              RftObserveCallback,
+              ffi.Pointer<ffi.Void>,
+              ffi.Pointer<ffi.Uint64>)>>('rft_observe');
+  late final _rft_observe = _rft_observePtr.asFunction<
+      int Function(
+          ffi.Pointer<RaftDb>,
+          ffi.Pointer<ffi.Char>,
+          RftObserveCallback,
+          ffi.Pointer<ffi.Void>,
+          ffi.Pointer<ffi.Uint64>)>();
+
+  /// Register a *live query* subscription for `query_json`. The callback
+  /// fires immediately with an initial-snapshot diff (every matching
+  /// document in `added`, others empty) and then again every time a
+  /// mutation in the queried collection causes the result set to change.
+  ///
+  /// Each diff is delivered as JSON:
+  ///
+  /// ```json
+  /// {
+  /// "added":   [<Document>, ...],
+  /// "removed": [<Document>, ...],
+  /// "updated": [<Document>, ...]
+  /// }
+  /// ```
+  ///
+  /// # Safety
+  ///
+  /// - `db` must be a valid handle.
+  /// - `query_json` must be a valid UTF-8 buffer of `query_json_len` bytes.
+  /// - `callback` must be a valid C function pointer that remains valid
+  /// until [`rft_unobserve`] returns.
+  /// - `user_data` is opaque to Rust; the platform binding owns its
+  /// lifetime and must keep it valid for the subscription.
+  /// - `out_sub_id` must be a valid `*mut u64`.
+  int rft_observe_query(
+    ffi.Pointer<RaftDb> db,
+    ffi.Pointer<ffi.Uint8> query_json,
+    int query_json_len,
+    RftObserveCallback callback,
+    ffi.Pointer<ffi.Void> user_data,
+    ffi.Pointer<ffi.Uint64> out_sub_id,
+  ) {
+    return _rft_observe_query(
+      db,
+      query_json,
+      query_json_len,
+      callback,
+      user_data,
+      out_sub_id,
+    );
+  }
+
+  late final _rft_observe_queryPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Uint32 Function(
+              ffi.Pointer<RaftDb>,
+              ffi.Pointer<ffi.Uint8>,
+              ffi.UintPtr,
+              RftObserveCallback,
+              ffi.Pointer<ffi.Void>,
+              ffi.Pointer<ffi.Uint64>)>>('rft_observe_query');
+  late final _rft_observe_query = _rft_observe_queryPtr.asFunction<
+      int Function(
+          ffi.Pointer<RaftDb>,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+          RftObserveCallback,
+          ffi.Pointer<ffi.Void>,
+          ffi.Pointer<ffi.Uint64>)>();
+
+  /// Cancel a subscription previously created by [`rft_observe`] or
+  /// [`rft_observe_query`]. Aborts the background task and removes it
+  /// from the registry. Calling this with an unknown id returns
+  /// [`RftError::UnknownSubscription`].
+  ///
+  /// # Safety
+  ///
+  /// - `db` must be a valid handle.
+  int rft_unobserve(
+    ffi.Pointer<RaftDb> db,
+    int sub_id,
+  ) {
+    return _rft_unobserve(
+      db,
+      sub_id,
+    );
+  }
+
+  late final _rft_unobservePtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Uint32 Function(
+              ffi.Pointer<RaftDb>, ffi.Uint64)>>('rft_unobserve');
+  late final _rft_unobserve =
+      _rft_unobservePtr.asFunction<int Function(ffi.Pointer<RaftDb>, int)>();
+
+  /// Execute a query and return an opaque result handle. Caller must free
+  /// it with [`rft_query_result_free`].
+  ///
+  /// # Safety
+  ///
+  /// - `db` must be a valid handle.
+  /// - `query_json` must be a valid UTF-8 buffer of `query_json_len` bytes.
+  /// - `out_result` must be a valid `*mut *mut RaftQueryResult`.
+  int rft_query_execute(
+    ffi.Pointer<RaftDb> db,
+    ffi.Pointer<ffi.Uint8> query_json,
+    int query_json_len,
+    ffi.Pointer<ffi.Pointer<RaftQueryResult>> out_result,
+  ) {
+    return _rft_query_execute(
+      db,
+      query_json,
+      query_json_len,
+      out_result,
+    );
+  }
+
+  late final _rft_query_executePtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Uint32 Function(
+              ffi.Pointer<RaftDb>,
+              ffi.Pointer<ffi.Uint8>,
+              ffi.UintPtr,
+              ffi.Pointer<ffi.Pointer<RaftQueryResult>>)>>('rft_query_execute');
+  late final _rft_query_execute = _rft_query_executePtr.asFunction<
+      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Uint8>, int,
+          ffi.Pointer<ffi.Pointer<RaftQueryResult>>)>();
+
+  /// Number of documents in a query result. Returns 0 for null handles.
+  ///
+  /// # Safety
+  ///
+  /// - `result` must be a handle returned by [`rft_query_execute`], or null.
+  int rft_query_result_count(
+    ffi.Pointer<RaftQueryResult> result,
+  ) {
+    return _rft_query_result_count(
+      result,
+    );
+  }
+
+  late final _rft_query_result_countPtr = _lookup<
+          ffi
+          .NativeFunction<ffi.UintPtr Function(ffi.Pointer<RaftQueryResult>)>>(
+      'rft_query_result_count');
+  late final _rft_query_result_count = _rft_query_result_countPtr
+      .asFunction<int Function(ffi.Pointer<RaftQueryResult>)>();
+
+  /// Fetch the JSON encoding of the document at `index` in the result set.
+  /// On `BufferTooSmall` the required size is written to `*out_len`.
+  ///
+  /// # Safety
+  ///
+  /// - `result` must be a handle returned by [`rft_query_execute`].
+  /// - `out_buf` must be writable for `*out_len` bytes, or null to query
+  /// the required size.
+  /// - `out_len` must be a valid `*mut usize`.
+  int rft_query_result_get(
+    ffi.Pointer<RaftQueryResult> result,
+    int index,
+    ffi.Pointer<ffi.Uint8> out_buf,
+    ffi.Pointer<ffi.UintPtr> out_len,
+  ) {
+    return _rft_query_result_get(
+      result,
+      index,
+      out_buf,
+      out_len,
+    );
+  }
+
+  late final _rft_query_result_getPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Uint32 Function(
+              ffi.Pointer<RaftQueryResult>,
+              ffi.UintPtr,
+              ffi.Pointer<ffi.Uint8>,
+              ffi.Pointer<ffi.UintPtr>)>>('rft_query_result_get');
+  late final _rft_query_result_get = _rft_query_result_getPtr.asFunction<
+      int Function(ffi.Pointer<RaftQueryResult>, int, ffi.Pointer<ffi.Uint8>,
+          ffi.Pointer<ffi.UintPtr>)>();
+
+  /// Free a query result handle. Safe to call with null (no-op).
+  ///
+  /// # Safety
+  ///
+  /// - `result` must be a handle returned by [`rft_query_execute`], or null.
+  /// - After this call, `result` is dangling and must not be reused.
+  void rft_query_result_free(
+    ffi.Pointer<RaftQueryResult> result,
+  ) {
+    return _rft_query_result_free(
+      result,
+    );
+  }
+
+  late final _rft_query_result_freePtr = _lookup<
+          ffi.NativeFunction<ffi.Void Function(ffi.Pointer<RaftQueryResult>)>>(
+      'rft_query_result_free');
+  late final _rft_query_result_free = _rft_query_result_freePtr
+      .asFunction<void Function(ffi.Pointer<RaftQueryResult>)>();
+
+  /// Begin a new transaction. The caller takes ownership of the returned
+  /// handle and must end it with `commit` or `rollback`.
+  ///
+  /// # Safety
+  ///
+  /// - `db` must be a valid handle.
+  /// - `out_txn` must be a valid `*mut *mut RaftTransaction`.
+  int rft_transaction_begin(
+    ffi.Pointer<RaftDb> db,
+    ffi.Pointer<ffi.Pointer<RaftTransaction>> out_txn,
+  ) {
+    return _rft_transaction_begin(
+      db,
+      out_txn,
+    );
+  }
+
+  late final _rft_transaction_beginPtr = _lookup<
+          ffi.NativeFunction<
+              ffi.Uint32 Function(ffi.Pointer<RaftDb>,
+                  ffi.Pointer<ffi.Pointer<RaftTransaction>>)>>(
+      'rft_transaction_begin');
+  late final _rft_transaction_begin = _rft_transaction_beginPtr.asFunction<
+      int Function(
+          ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Pointer<RaftTransaction>>)>();
+
+  /// Read a document inside the transaction. The version is recorded for
+  /// conflict detection at commit time. JSON encoding is written to
+  /// `out_buf` using the same buffer-too-small protocol as
+  /// `rft_collection_get`.
+  ///
+  /// Returns [`RftError::NotFound`] when the doc does not exist (the read
+  /// is still tracked, so insertion of the doc by another writer before
+  /// commit will be detected as a conflict).
+  ///
+  /// # Safety
+  ///
+  /// - `txn` must be a valid handle returned by
+  /// [`rft_transaction_begin`] and not yet committed/rolled back.
+  /// - Other arguments follow the standard FFI contract.
+  int rft_transaction_get(
+    ffi.Pointer<RaftTransaction> txn,
+    ffi.Pointer<ffi.Char> collection,
+    int doc_id,
+    ffi.Pointer<ffi.Uint8> out_buf,
+    ffi.Pointer<ffi.UintPtr> out_len,
+  ) {
+    return _rft_transaction_get(
+      txn,
+      collection,
+      doc_id,
+      out_buf,
+      out_len,
+    );
+  }
+
+  late final _rft_transaction_getPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Uint32 Function(
+              ffi.Pointer<RaftTransaction>,
+              ffi.Pointer<ffi.Char>,
+              ffi.Uint64,
+              ffi.Pointer<ffi.Uint8>,
+              ffi.Pointer<ffi.UintPtr>)>>('rft_transaction_get');
+  late final _rft_transaction_get = _rft_transaction_getPtr.asFunction<
+      int Function(ffi.Pointer<RaftTransaction>, ffi.Pointer<ffi.Char>, int,
+          ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.UintPtr>)>();
+
+  /// Buffer a write inside the transaction. Applied atomically on commit.
+  ///
+  /// # Safety
+  ///
+  /// - `txn` must be a valid handle returned by
+  /// [`rft_transaction_begin`] and not yet finalised.
+  /// - `doc_json` must be a valid UTF-8 buffer of `doc_json_len` bytes.
+  int rft_transaction_put(
+    ffi.Pointer<RaftTransaction> txn,
+    ffi.Pointer<ffi.Char> collection,
+    ffi.Pointer<ffi.Uint8> doc_json,
+    int doc_json_len,
+  ) {
+    return _rft_transaction_put(
+      txn,
+      collection,
+      doc_json,
+      doc_json_len,
+    );
+  }
+
+  late final _rft_transaction_putPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Uint32 Function(
+              ffi.Pointer<RaftTransaction>,
+              ffi.Pointer<ffi.Char>,
+              ffi.Pointer<ffi.Uint8>,
+              ffi.UintPtr)>>('rft_transaction_put');
+  late final _rft_transaction_put = _rft_transaction_putPtr.asFunction<
+      int Function(ffi.Pointer<RaftTransaction>, ffi.Pointer<ffi.Char>,
+          ffi.Pointer<ffi.Uint8>, int)>();
+
+  /// Buffer a delete inside the transaction.
+  ///
+  /// # Safety
+  ///
+  /// - `txn` must be a valid, active handle.
+  /// - `collection` must be a valid null-terminated UTF-8 C string.
+  int rft_transaction_delete(
+    ffi.Pointer<RaftTransaction> txn,
+    ffi.Pointer<ffi.Char> collection,
+    int doc_id,
+  ) {
+    return _rft_transaction_delete(
+      txn,
+      collection,
+      doc_id,
+    );
+  }
+
+  late final _rft_transaction_deletePtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Uint32 Function(ffi.Pointer<RaftTransaction>,
+              ffi.Pointer<ffi.Char>, ffi.Uint64)>>('rft_transaction_delete');
+  late final _rft_transaction_delete = _rft_transaction_deletePtr.asFunction<
+      int Function(ffi.Pointer<RaftTransaction>, ffi.Pointer<ffi.Char>, int)>();
+
+  /// Validate the read set and atomically apply all buffered changes.
+  /// Consumes the handle — it is freed regardless of outcome and must not
+  /// be used again.
+  ///
+  /// Returns:
+  /// - [`RftError::Ok`] on success.
+  /// - [`RftError::TransactionConflict`] if a tracked doc was modified
+  /// concurrently. No writes are applied.
+  ///
+  /// # Safety
+  ///
+  /// - `txn` must be a valid, active handle. After this call, `txn` is
+  /// freed and dangling.
+  int rft_transaction_commit(
+    ffi.Pointer<RaftTransaction> txn,
+  ) {
+    return _rft_transaction_commit(
+      txn,
+    );
+  }
+
+  late final _rft_transaction_commitPtr = _lookup<
+          ffi
+          .NativeFunction<ffi.Uint32 Function(ffi.Pointer<RaftTransaction>)>>(
+      'rft_transaction_commit');
+  late final _rft_transaction_commit = _rft_transaction_commitPtr
+      .asFunction<int Function(ffi.Pointer<RaftTransaction>)>();
+
+  /// Discard the transaction without applying any buffered changes.
+  /// Consumes the handle.
+  ///
+  /// # Safety
+  ///
+  /// - `txn` must be a valid handle returned by
+  /// [`rft_transaction_begin`], or null (no-op).
+  /// - After this call, `txn` is freed and dangling.
+  void rft_transaction_rollback(
+    ffi.Pointer<RaftTransaction> txn,
+  ) {
+    return _rft_transaction_rollback(
+      txn,
+    );
+  }
+
+  late final _rft_transaction_rollbackPtr = _lookup<
+          ffi.NativeFunction<ffi.Void Function(ffi.Pointer<RaftTransaction>)>>(
+      'rft_transaction_rollback');
+  late final _rft_transaction_rollback = _rft_transaction_rollbackPtr
+      .asFunction<void Function(ffi.Pointer<RaftTransaction>)>();
 }
 
 final class __mbstate_t extends ffi.Union {
@@ -251,12 +863,27 @@ enum RftError {
   /// An I/O or storage engine error occurred.
   RFT_ERROR_IO_ERROR(3),
 
-  /// The requested key was not found.
+  /// The requested key/document was not found.
   RFT_ERROR_NOT_FOUND(4),
 
   /// The caller-provided buffer is too small. Check `out_len` for the
   /// required size.
-  RFT_ERROR_BUFFER_TOO_SMALL(5);
+  RFT_ERROR_BUFFER_TOO_SMALL(5),
+
+  /// A document or filter passed via JSON failed to parse.
+  RFT_ERROR_INVALID_JSON(6),
+
+  /// A transaction commit failed because a tracked document was modified
+  /// concurrently.
+  RFT_ERROR_TRANSACTION_CONFLICT(7),
+
+  /// A handle (transaction, query result, subscription) is invalid —
+  /// already consumed, freed, or never created.
+  RFT_ERROR_INVALID_HANDLE(8),
+
+  /// A subscription id passed to [`rft_unobserve`](super::rft_unobserve)
+  /// is not registered.
+  RFT_ERROR_UNKNOWN_SUBSCRIPTION(9);
 
   final int value;
   const RftError(this.value);
@@ -268,11 +895,29 @@ enum RftError {
         3 => RFT_ERROR_IO_ERROR,
         4 => RFT_ERROR_NOT_FOUND,
         5 => RFT_ERROR_BUFFER_TOO_SMALL,
+        6 => RFT_ERROR_INVALID_JSON,
+        7 => RFT_ERROR_TRANSACTION_CONFLICT,
+        8 => RFT_ERROR_INVALID_HANDLE,
+        9 => RFT_ERROR_UNKNOWN_SUBSCRIPTION,
         _ => throw ArgumentError("Unknown value for RftError: $value"),
       };
 }
 
 final class RaftDb extends ffi.Opaque {}
+
+final class RaftQueryResult extends ffi.Opaque {}
+
+final class RaftTransaction extends ffi.Opaque {}
+
+/// C-compatible callback signature.
+///
+/// `event_json` is a null-terminated UTF-8 string valid only for the
+/// duration of the call. `user_data` is the opaque pointer passed to
+/// [`rft_observe`].
+typedef RftObserveCallback = ffi.Pointer<
+    ffi.NativeFunction<
+        ffi.Void Function(ffi.Pointer<ffi.Char> event_json,
+            ffi.Pointer<ffi.Void> user_data)>>;
 
 const int __bool_true_false_are_defined = 1;
 

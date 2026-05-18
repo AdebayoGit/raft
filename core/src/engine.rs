@@ -4,8 +4,10 @@
 //! Write path:  put/delete → WAL append → MemTable insert → flush to SSTable if full
 //! Read path:   get → MemTable → SSTables (newest first, L0 → Lmax)
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::compaction::CompactionConfig;
@@ -147,6 +149,15 @@ pub struct StorageEngine {
     hlc_physical: u64,
     /// Next unique SSTable ID.
     next_table_id: TableId,
+    /// Open `SSTableReader`s, keyed by table id. Lazily populated on first
+    /// read of a table and explicitly evicted on compaction.
+    ///
+    /// Cache is unbounded: each entry holds the SSTable's full byte buffer,
+    /// bloom filter and index, so worst-case memory ≈ Σ(file_size). For
+    /// typical mobile workloads (a few small SSTables) this is the right
+    /// trade vs. re-reading from disk on every `get`. An LRU bound can be
+    /// added later if total live SSTable bytes grow unbounded.
+    reader_cache: Mutex<HashMap<TableId, Arc<SSTableReader>>>,
 }
 
 impl StorageEngine {
@@ -199,6 +210,7 @@ impl StorageEngine {
             hlc_logical: 0,
             hlc_physical: 0,
             next_table_id,
+            reader_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -239,17 +251,16 @@ impl StorageEngine {
         tables.sort_by(|a, b| a.level.cmp(&b.level).then_with(|| b.id.cmp(&a.id)));
 
         for meta in tables {
-            // Quick key-range filter.
+            // Quick key-range filter — eliminates most tables before any
+            // bloom check or file access.
             if key < meta.smallest_key.as_slice() || key > meta.largest_key.as_slice() {
                 continue;
             }
 
-            let path = self.sstable_path(meta.id, meta.level);
-            if !path.exists() {
-                continue;
-            }
-
-            let reader = SSTableReader::open(&path)?;
+            let reader = match self.reader_for(meta.id, meta.level)? {
+                Some(r) => r,
+                None => continue, // file missing — treat as absent
+            };
             if let Some(maybe_value) = reader.get(key)? {
                 return match maybe_value {
                     Some(v) => Ok(Some(v)),
@@ -259,6 +270,44 @@ impl StorageEngine {
         }
 
         Ok(None)
+    }
+
+    /// Return a cached `SSTableReader` for the given table, opening and
+    /// caching it on first use. Returns `Ok(None)` if the file is missing
+    /// (e.g. raced with compaction).
+    fn reader_for(
+        &self,
+        id: TableId,
+        level: u32,
+    ) -> Result<Option<Arc<SSTableReader>>, StorageError> {
+        // Fast path: already cached.
+        {
+            let cache = self.reader_cache.lock().expect("reader cache poisoned");
+            if let Some(r) = cache.get(&id) {
+                return Ok(Some(Arc::clone(r)));
+            }
+        }
+        // Slow path: open the file, then insert. We open outside the lock
+        // to avoid blocking other readers on disk I/O. The race where two
+        // threads open the same table concurrently is benign: whichever
+        // entry lands in the map first wins, the other Arc is dropped.
+        let path = self.sstable_path(id, level);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let reader = Arc::new(SSTableReader::open(&path)?);
+        let mut cache = self.reader_cache.lock().expect("reader cache poisoned");
+        let entry = cache.entry(id).or_insert_with(|| Arc::clone(&reader));
+        Ok(Some(Arc::clone(entry)))
+    }
+
+    /// Drop a cached reader — called when an SSTable is removed by
+    /// compaction. Outstanding `Arc`s held by in-flight `get`s remain
+    /// valid until those calls complete.
+    fn evict_reader(&self, id: TableId) {
+        if let Ok(mut cache) = self.reader_cache.lock() {
+            cache.remove(&id);
+        }
     }
 
     /// Delete a key by writing a tombstone.
@@ -391,9 +440,11 @@ impl StorageEngine {
         };
         self.manifest.add_sstable(new_meta)?;
 
-        // Remove old tables from manifest and delete files.
+        // Remove old tables from manifest, evict their cached readers,
+        // and delete files.
         for meta in &tables {
             self.manifest.remove_sstable(meta.id)?;
+            self.evict_reader(meta.id);
             let old_path = self.sstable_path(meta.id, meta.level);
             fs::remove_file(&old_path).ok();
             stats.tables_deleted += 1;

@@ -8,19 +8,49 @@ headers:
 
 compiler-opts:
   - '-w'
+  # The C header uses a bare `rft_` function-attribute prefix that
+  # cbindgen emits without a macro definition. Define it to nothing
+  # here so libclang can parse the header.
+  - '-Drft_='
 
 # Only emit the raft-specific symbols; exclude all system header noise.
 functions:
   include:
+    # Raw KV
     - 'rft_open'
     - 'rft_close'
     - 'rft_put'
     - 'rft_get'
     - 'rft_delete'
+    # Typed collections
+    - 'rft_collection_put'
+    - 'rft_collection_put_auto'
+    - 'rft_collection_get'
+    - 'rft_collection_delete'
+    - 'rft_collection_count'
+    - 'rft_collection_list_ids'
+    # Queries
+    - 'rft_query_execute'
+    - 'rft_query_result_count'
+    - 'rft_query_result_get'
+    - 'rft_query_result_free'
+    # Transactions
+    - 'rft_transaction_begin'
+    - 'rft_transaction_get'
+    - 'rft_transaction_put'
+    - 'rft_transaction_delete'
+    - 'rft_transaction_commit'
+    - 'rft_transaction_rollback'
+    # Observation
+    - 'rft_observe'
+    - 'rft_observe_query'
+    - 'rft_unobserve'
 
 structs:
   include:
     - 'RaftDb'
+    - 'RaftQueryResult'
+    - 'RaftTransaction'
 
 enums:
   include:
@@ -34,9 +64,10 @@ unnamed-enums:
   exclude:
     - '.*'
 
+# We need RftObserveCallback for rft_observe / rft_observe_query.
 typedefs:
-  exclude:
-    - '.*'
+  include:
+    - 'RftObserveCallback'
 
 silence-enum-warning: true
 

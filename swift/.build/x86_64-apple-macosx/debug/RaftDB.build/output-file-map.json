@@ -22,5 +22,12 @@
     "swiftmodule": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftError~partial.swiftmodule",
     "swift-dependencies": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftError.swiftdeps",
     "diagnostics": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftError.dia"
+  },
+  "/Users/Ekundayo/Projects/raft/swift/Sources/RaftDB/RaftTransaction.swift": {
+    "dependencies": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftTransaction.d",
+    "object": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftTransaction.swift.o",
+    "swiftmodule": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftTransaction~partial.swiftmodule",
+    "swift-dependencies": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftTransaction.swiftdeps",
+    "diagnostics": "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/RaftTransaction.dia"
   }
 }

@@ -86,4 +86,41 @@ class RaftCollection<T> {
 
   Uint8List _scopedKey(String id) =>
       Uint8List.fromList(utf8.encode('$name:$id'));
+
+  // ---------------------------------------------------------------------------
+  // Typed-FFI surface (separate storage namespace from the String-id API above)
+  // ---------------------------------------------------------------------------
+
+  /// Insert a document into the typed collection store, letting the
+  /// engine assign a fresh `int` (UInt64) id. Returns the assigned id.
+  Future<int> putAuto(T document) {
+    return _db.collectionPutAuto(name, _serialize(document));
+  }
+
+  /// Insert or update a document at the given `int` id. The serialized
+  /// document's `id` field must equal [docId].
+  Future<void> putById(int docId, T document) {
+    return _db.collectionPut(name, _serialize(document));
+  }
+
+  /// Retrieve a document by `int` id from the typed namespace.
+  /// Returns `null` if not found.
+  Future<T?> getById(int docId) async {
+    final bytes = await _db.collectionGet(name, docId);
+    if (bytes == null) return null;
+    return _deserialize(bytes);
+  }
+
+  /// Delete a document by `int` id from the typed namespace. Not an
+  /// error if the id does not exist.
+  Future<void> deleteById(int docId) {
+    return _db.collectionDelete(name, docId);
+  }
+
+  /// Number of documents currently in this collection (typed namespace).
+  Future<int> count() => _db.collectionCount(name);
+
+  /// All document ids currently in this collection (typed namespace),
+  /// sorted ascending.
+  Future<List<int>> listIds() => _db.collectionListIds(name);
 }
