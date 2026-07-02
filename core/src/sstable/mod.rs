@@ -19,11 +19,13 @@
 //! ```
 
 mod bloom;
+mod cache;
 mod error;
 mod reader;
 mod writer;
 
 pub use bloom::BloomFilter;
+pub use cache::BlockCache;
 pub use error::SSTableError;
 pub use reader::SSTableReader;
 pub use writer::SSTableWriter;

@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::compaction::CompactionConfig;
 use crate::manifest::{Manifest, SSTableMeta, TableId};
 use crate::memtable::MemTable;
-use crate::sstable::{SSTableReader, SSTableWriter};
+use crate::sstable::{BlockCache, SSTableReader, SSTableWriter};
 use crate::wal::{HlcTimestamp, SyncMode, Wal, WalEntry};
 
 /// Unified error type for the storage engine.
@@ -59,6 +59,10 @@ pub struct StorageConfig {
     /// per-append fsyncs from also journaling file-size updates.
     /// Default: 1 MiB.
     pub wal_preallocate: u64,
+    /// Byte cap for the shared SSTable data-block cache. Total cached
+    /// block bytes stay under this limit regardless of how many tables
+    /// are live. Default: 8 MiB.
+    pub block_cache_bytes: usize,
 }
 
 impl Default for StorageConfig {
@@ -70,6 +74,7 @@ impl Default for StorageConfig {
             device_id: 0,
             wal_sync: SyncMode::Always,
             wal_preallocate: 1024 * 1024,
+            block_cache_bytes: 8 * 1024 * 1024,
         }
     }
 }
@@ -168,12 +173,14 @@ pub struct StorageEngine {
     /// Open `SSTableReader`s, keyed by table id. Lazily populated on first
     /// read of a table and explicitly evicted on compaction.
     ///
-    /// Cache is unbounded: each entry holds the SSTable's full byte buffer,
-    /// bloom filter and index, so worst-case memory ≈ Σ(file_size). For
-    /// typical mobile workloads (a few small SSTables) this is the right
-    /// trade vs. re-reading from disk on every `get`. An LRU bound can be
-    /// added later if total live SSTable bytes grow unbounded.
+    /// Readers are lightweight: each holds only a file handle, bloom
+    /// filter, and index block. Data-block bytes live in `block_cache`,
+    /// which is byte-capped, so total memory stays bounded regardless of
+    /// how many tables are live.
     reader_cache: Mutex<HashMap<TableId, Arc<SSTableReader>>>,
+    /// Byte-capped LRU cache of SSTable data blocks, shared by every
+    /// reader opened through `reader_for`.
+    block_cache: Arc<BlockCache>,
 }
 
 impl StorageEngine {
@@ -235,6 +242,8 @@ impl StorageEngine {
             }
         }
 
+        let block_cache = Arc::new(BlockCache::new(config.block_cache_bytes));
+
         Ok(Self {
             db_dir,
             config,
@@ -246,6 +255,7 @@ impl StorageEngine {
             hlc_physical,
             next_table_id,
             reader_cache: Mutex::new(HashMap::new()),
+            block_cache,
         })
     }
 
@@ -376,7 +386,11 @@ impl StorageEngine {
         if !path.exists() {
             return Ok(None);
         }
-        let reader = Arc::new(SSTableReader::open(&path)?);
+        let reader = Arc::new(SSTableReader::open_with_cache(
+            &path,
+            Arc::clone(&self.block_cache),
+            id,
+        )?);
         let mut cache = self.reader_cache.lock().unwrap_or_else(|e| e.into_inner());
         let entry = cache.entry(id).or_insert_with(|| Arc::clone(&reader));
         Ok(Some(Arc::clone(entry)))
@@ -537,6 +551,7 @@ impl StorageEngine {
         for meta in &tables {
             self.manifest.remove_sstable(meta.id)?;
             self.evict_reader(meta.id);
+            self.block_cache.evict_table(meta.id);
             let old_path = self.sstable_path(meta.id, meta.level);
             fs::remove_file(&old_path).ok();
             stats.tables_deleted += 1;
@@ -717,6 +732,7 @@ mod tests {
             device_id: 0xDEAD,
             wal_sync: SyncMode::Always,
             wal_preallocate: 1024 * 1024,
+            block_cache_bytes: 4096,
         }
     }
 
@@ -1128,6 +1144,85 @@ mod tests {
         engine.compact().unwrap();
 
         assert_eq!(engine.get(b"X").unwrap(), Some(b"new".to_vec()));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn block_cache_stays_bounded_across_many_tables() {
+        let dir = temp_dir("block_cache_bounded");
+        // Tiny cache so eviction churns constantly across reads.
+        let config = StorageConfig {
+            block_cache_bytes: 512,
+            ..default_config()
+        };
+        let mut engine = StorageEngine::open(&dir, config).unwrap();
+
+        // Write enough to flush several SSTables (memtable_size = 4096).
+        for i in 0..300 {
+            engine
+                .put(
+                    format!("key-{i:06}").into_bytes(),
+                    format!("value-data-{i:06}").into_bytes(),
+                )
+                .unwrap();
+        }
+        engine.flush().unwrap();
+
+        // Every key readable, cache never exceeds its cap.
+        for i in 0..300 {
+            let val = engine.get(format!("key-{i:06}").as_bytes()).unwrap();
+            assert_eq!(val, Some(format!("value-data-{i:06}").into_bytes()));
+            assert!(engine.block_cache.current_bytes() <= engine.block_cache.capacity_bytes());
+        }
+        assert!(engine.block_cache.hits() + engine.block_cache.misses() > 0);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn compaction_evicts_dead_tables_from_block_cache() {
+        let dir = temp_dir("block_cache_compact_evict");
+        let config = StorageConfig {
+            memtable_size: 1024 * 1024,
+            block_cache_bytes: 1024 * 1024,
+            compaction: CompactionConfig {
+                level_threshold: 2,
+                max_levels: 3,
+                block_size: 128,
+            },
+            ..default_config()
+        };
+        let mut engine = StorageEngine::open(&dir, config).unwrap();
+
+        for round in 0..2 {
+            for i in 0..50 {
+                engine
+                    .put(
+                        format!("k{i:04}").into_bytes(),
+                        format!("v{round}-{i:04}").into_bytes(),
+                    )
+                    .unwrap();
+            }
+            engine.flush().unwrap();
+        }
+
+        // Populate the cache from the L0 tables.
+        for i in 0..50 {
+            engine.get(format!("k{i:04}").as_bytes()).unwrap();
+        }
+        assert!(engine.block_cache.current_bytes() > 0);
+
+        let stats = engine.compact().unwrap();
+        assert!(stats.tables_deleted > 0);
+
+        // Reads after compaction return the newest values.
+        for i in 0..50 {
+            assert_eq!(
+                engine.get(format!("k{i:04}").as_bytes()).unwrap(),
+                Some(format!("v1-{i:04}").into_bytes())
+            );
+        }
 
         fs::remove_dir_all(&dir).ok();
     }

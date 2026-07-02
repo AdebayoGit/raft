@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::bloom::BloomFilter;
+use super::cache::BlockCache;
 use super::error::SSTableError;
 use super::SSTABLE_MAGIC;
 
@@ -13,16 +15,23 @@ const FOOTER_SIZE: usize = 32;
 
 /// Reads an immutable SSTable file.
 ///
-/// On `open`, the footer, index block, and bloom filter are loaded into
-/// memory. Data blocks are read on demand during `get` and `scan`.
+/// On `open`, only the footer, index block, and bloom filter are loaded
+/// into memory. Data blocks are read on demand (positional reads) during
+/// `get` and `scan`, optionally through a shared [`BlockCache`] when the
+/// reader was opened via [`SSTableReader::open_with_cache`].
 pub struct SSTableReader {
     path: PathBuf,
-    /// Raw file contents (memory-mapped would be better for production,
-    /// but a simple read-to-memory is correct and sufficient for Phase 1).
-    data: Vec<u8>,
+    /// Open handle used for positional data-block reads.
+    file: fs::File,
+    /// Total file length, used to bounds-check block reads.
+    file_len: u64,
     bloom: BloomFilter,
     index: Vec<IndexEntry>,
     entry_count: u64,
+    /// Shared block cache plus the table id used as the cache key namespace.
+    /// `None` means every block read hits the file (used by compaction so
+    /// one-shot merges don't pollute the cache).
+    cache: Option<(Arc<BlockCache>, u64)>,
 }
 
 /// Decoded index entry: first key of a data block and where to find it.
@@ -34,50 +43,73 @@ struct IndexEntry {
 }
 
 impl SSTableReader {
-    /// Open an SSTable file, validating the footer and loading the index
-    /// and bloom filter into memory.
+    /// Open an SSTable file without a block cache. Every data-block read
+    /// goes to the file.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SSTableError> {
-        let path = path.as_ref().to_path_buf();
-        let data = fs::read(&path)?;
+        Self::open_inner(path.as_ref(), None)
+    }
 
-        if data.len() < FOOTER_SIZE {
+    /// Open an SSTable file whose data-block reads go through `cache`,
+    /// keyed by `table_id`.
+    pub fn open_with_cache(
+        path: impl AsRef<Path>,
+        cache: Arc<BlockCache>,
+        table_id: u64,
+    ) -> Result<Self, SSTableError> {
+        Self::open_inner(path.as_ref(), Some((cache, table_id)))
+    }
+
+    fn open_inner(
+        path: &Path,
+        cache: Option<(Arc<BlockCache>, u64)>,
+    ) -> Result<Self, SSTableError> {
+        let path = path.to_path_buf();
+        let file = fs::File::open(&path)?;
+        let file_len = file.metadata()?.len();
+
+        if (file_len as usize) < FOOTER_SIZE {
             return Err(SSTableError::BadMagic);
         }
 
         // ── Parse footer ──
-        let footer_start = data.len() - FOOTER_SIZE;
-        let footer = &data[footer_start..];
+        let footer_start = file_len - FOOTER_SIZE as u64;
+        let mut footer = [0u8; FOOTER_SIZE];
+        read_exact_at(&file, &mut footer, footer_start)?;
 
         let magic = &footer[28..32];
         if magic != SSTABLE_MAGIC {
             return Err(SSTableError::BadMagic);
         }
 
-        let bloom_offset = u64::from_be_bytes(footer[0..8].try_into().unwrap()) as usize;
-        let index_offset = u64::from_be_bytes(footer[8..16].try_into().unwrap()) as usize;
+        let bloom_offset = u64::from_be_bytes(footer[0..8].try_into().unwrap());
+        let index_offset = u64::from_be_bytes(footer[8..16].try_into().unwrap());
         let entry_count = u64::from_be_bytes(footer[16..24].try_into().unwrap());
 
-        // ── Load bloom filter ──
         if bloom_offset > index_offset || index_offset > footer_start {
             return Err(SSTableError::CorruptIndex(
                 "offsets out of range".to_string(),
             ));
         }
-        let bloom_data = &data[bloom_offset..index_offset];
-        let bloom = BloomFilter::decode(bloom_data).ok_or_else(|| {
+
+        // ── Load bloom filter + index block in one read ──
+        let meta_len = (footer_start - bloom_offset) as usize;
+        let mut meta = vec![0u8; meta_len];
+        read_exact_at(&file, &mut meta, bloom_offset)?;
+
+        let bloom_len = (index_offset - bloom_offset) as usize;
+        let bloom = BloomFilter::decode(&meta[..bloom_len]).ok_or_else(|| {
             SSTableError::CorruptIndex("failed to decode bloom filter".to_string())
         })?;
-
-        // ── Load index block ──
-        let index_data = &data[index_offset..footer_start];
-        let index = Self::decode_index(index_data)?;
+        let index = Self::decode_index(&meta[bloom_len..])?;
 
         Ok(Self {
             path,
-            data,
+            file,
+            file_len,
             bloom,
             index,
             entry_count,
+            cache,
         })
     }
 
@@ -95,7 +127,8 @@ impl SSTableReader {
     pub fn scan_all(&self) -> Result<Vec<KvPair>, SSTableError> {
         let mut all = Vec::new();
         for ie in &self.index {
-            all.extend(self.read_block(ie)?);
+            let block = self.read_block_bytes(ie)?;
+            all.extend(Self::decode_block(&block, ie.offset)?);
         }
         Ok(all)
     }
@@ -119,7 +152,8 @@ impl SSTableReader {
         };
 
         let ie = &self.index[block_idx];
-        self.search_block(ie, key)
+        let block = self.read_block_bytes(ie)?;
+        Self::search_block(&block, ie.offset, key)
     }
 
     /// Range scan — returns all entries with `start <= key < end` in sorted
@@ -147,7 +181,8 @@ impl SSTableReader {
                 }
             }
 
-            let entries = self.read_block(ie)?;
+            let block = self.read_block_bytes(ie)?;
+            let entries = Self::decode_block(&block, ie.offset)?;
             for (k, v) in entries {
                 if k.as_slice() < start {
                     continue;
@@ -164,28 +199,44 @@ impl SSTableReader {
         Ok(results)
     }
 
-    /// Search a single data block for an exact key match.
-    ///
-    /// Streams over the block bytes without materialising a `Vec` of
-    /// owned key/value pairs. Only the matching value is allocated; all
-    /// other entries are skipped in place. This avoids the per-`get`
-    /// allocation storm that was previously the dominant cost for
-    /// bloom-positive lookups.
-    fn search_block(
-        &self,
-        ie: &IndexEntry,
-        key: &[u8],
-    ) -> Result<Option<Option<Vec<u8>>>, SSTableError> {
-        let start = ie.offset as usize;
-        let end = start + ie.length as usize;
-        if end > self.data.len() {
+    /// Fetch a data block's raw bytes, consulting the shared cache first
+    /// when one is configured.
+    fn read_block_bytes(&self, ie: &IndexEntry) -> Result<Arc<Vec<u8>>, SSTableError> {
+        let end = ie.offset + ie.length as u64;
+        if end > self.file_len {
             return Err(SSTableError::CorruptBlock {
                 offset: ie.offset,
                 reason: "block extends past file".to_string(),
             });
         }
 
-        let mut cursor = &self.data[start..end];
+        if let Some((cache, table_id)) = &self.cache {
+            if let Some(block) = cache.get(*table_id, ie.offset) {
+                return Ok(block);
+            }
+        }
+
+        let mut buf = vec![0u8; ie.length as usize];
+        read_exact_at(&self.file, &mut buf, ie.offset)?;
+        let block = Arc::new(buf);
+
+        if let Some((cache, table_id)) = &self.cache {
+            cache.insert(*table_id, ie.offset, Arc::clone(&block));
+        }
+        Ok(block)
+    }
+
+    /// Search a single data block for an exact key match.
+    ///
+    /// Streams over the block bytes without materialising a `Vec` of
+    /// owned key/value pairs. Only the matching value is allocated; all
+    /// other entries are skipped in place.
+    fn search_block(
+        block: &[u8],
+        block_offset: u64,
+        key: &[u8],
+    ) -> Result<Option<Option<Vec<u8>>>, SSTableError> {
+        let mut cursor = block;
         while cursor.len() >= 5 {
             let key_len = u32::from_be_bytes(cursor[0..4].try_into().unwrap()) as usize;
             let value_flag = cursor[4];
@@ -195,7 +246,7 @@ impl SSTableReader {
                 1 => {
                     if cursor.len() < 4 {
                         return Err(SSTableError::CorruptBlock {
-                            offset: ie.offset,
+                            offset: block_offset,
                             reason: "truncated value_len".to_string(),
                         });
                     }
@@ -203,7 +254,7 @@ impl SSTableReader {
                     cursor = &cursor[4..];
                     if cursor.len() < key_len + value_len {
                         return Err(SSTableError::CorruptBlock {
-                            offset: ie.offset,
+                            offset: block_offset,
                             reason: "truncated key/value".to_string(),
                         });
                     }
@@ -222,7 +273,7 @@ impl SSTableReader {
                 0 => {
                     if cursor.len() < key_len {
                         return Err(SSTableError::CorruptBlock {
-                            offset: ie.offset,
+                            offset: block_offset,
                             reason: "truncated tombstone key".to_string(),
                         });
                     }
@@ -237,7 +288,7 @@ impl SSTableReader {
                 }
                 other => {
                     return Err(SSTableError::CorruptBlock {
-                        offset: ie.offset,
+                        offset: block_offset,
                         reason: format!("unknown value_flag: {other}"),
                     });
                 }
@@ -247,17 +298,8 @@ impl SSTableReader {
     }
 
     /// Decode all key-value pairs from a data block.
-    fn read_block(&self, ie: &IndexEntry) -> Result<Vec<KvPair>, SSTableError> {
-        let start = ie.offset as usize;
-        let end = start + ie.length as usize;
-        if end > self.data.len() {
-            return Err(SSTableError::CorruptBlock {
-                offset: ie.offset,
-                reason: "block extends past file".to_string(),
-            });
-        }
-
-        let mut cursor = &self.data[start..end];
+    fn decode_block(block: &[u8], block_offset: u64) -> Result<Vec<KvPair>, SSTableError> {
+        let mut cursor = block;
         let mut entries = Vec::new();
 
         while cursor.len() >= 5 {
@@ -271,7 +313,7 @@ impl SSTableReader {
                     // Live entry: value_len (4) + key + value
                     if cursor.len() < 4 {
                         return Err(SSTableError::CorruptBlock {
-                            offset: ie.offset,
+                            offset: block_offset,
                             reason: "truncated value_len".to_string(),
                         });
                     }
@@ -280,7 +322,7 @@ impl SSTableReader {
 
                     if cursor.len() < key_len + value_len {
                         return Err(SSTableError::CorruptBlock {
-                            offset: ie.offset,
+                            offset: block_offset,
                             reason: "truncated key/value".to_string(),
                         });
                     }
@@ -293,7 +335,7 @@ impl SSTableReader {
                     // Tombstone: key only
                     if cursor.len() < key_len {
                         return Err(SSTableError::CorruptBlock {
-                            offset: ie.offset,
+                            offset: block_offset,
                             reason: "truncated tombstone key".to_string(),
                         });
                     }
@@ -303,7 +345,7 @@ impl SSTableReader {
                 }
                 other => {
                     return Err(SSTableError::CorruptBlock {
-                        offset: ie.offset,
+                        offset: block_offset,
                         reason: format!("unknown value_flag: {other}"),
                     });
                 }
@@ -342,6 +384,40 @@ impl SSTableReader {
         }
         Ok(entries)
     }
+}
+
+/// Positional read that fills `buf` from `offset` without moving a shared
+/// file cursor — safe for concurrent readers over the same handle.
+#[cfg(unix)]
+fn read_exact_at(file: &fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(buf, offset)
+}
+
+/// Positional read that fills `buf` from `offset` without moving a shared
+/// file cursor — safe for concurrent readers over the same handle.
+#[cfg(windows)]
+fn read_exact_at(file: &fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    let mut buf = buf;
+    let mut offset = offset;
+    while !buf.is_empty() {
+        match file.seek_read(buf, offset) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "failed to fill whole buffer",
+                ))
+            }
+            Ok(n) => {
+                buf = &mut buf[n..];
+                offset += n as u64;
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -532,5 +608,94 @@ mod tests {
         ];
         let reader = write_and_open("before_first", entries);
         assert_eq!(reader.get(b"a").unwrap(), None);
+    }
+
+    #[test]
+    fn cached_reader_returns_correct_values_and_populates_cache() {
+        let path = temp_path("cached_reader");
+        let _ = fs::remove_file(&path);
+
+        let entries = sample_entries(100);
+        let w = SSTableWriter::new(&path).with_block_size(128);
+        w.write(entries.iter().cloned()).unwrap();
+
+        let cache = Arc::new(BlockCache::new(1024 * 1024));
+        let reader = SSTableReader::open_with_cache(&path, Arc::clone(&cache), 7).unwrap();
+
+        for (k, v) in &entries {
+            assert_eq!(reader.get(k).unwrap(), Some(v.clone()));
+        }
+        assert!(cache.current_bytes() > 0, "cache must hold blocks");
+
+        // Second pass must be served from cache (hits increase).
+        let hits_before = cache.hits();
+        for (k, v) in &entries {
+            assert_eq!(reader.get(k).unwrap(), Some(v.clone()));
+        }
+        assert!(cache.hits() > hits_before, "repeat reads must hit cache");
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn cached_reader_correct_under_tiny_cache_eviction() {
+        let path = temp_path("tiny_cache");
+        let _ = fs::remove_file(&path);
+
+        let entries = sample_entries(200);
+        let w = SSTableWriter::new(&path).with_block_size(64);
+        w.write(entries.iter().cloned()).unwrap();
+
+        // Cap far smaller than the data set — constant eviction churn.
+        let cache = Arc::new(BlockCache::new(256));
+        let reader = SSTableReader::open_with_cache(&path, Arc::clone(&cache), 1).unwrap();
+
+        for (k, v) in &entries {
+            assert_eq!(reader.get(k).unwrap(), Some(v.clone()));
+            assert!(cache.current_bytes() <= cache.capacity_bytes());
+        }
+
+        let scanned = reader.scan(b"key-00000", None).unwrap();
+        assert_eq!(scanned, entries);
+        assert!(cache.current_bytes() <= cache.capacity_bytes());
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn cache_shared_across_readers_stays_bounded() {
+        let cache = Arc::new(BlockCache::new(512));
+        let mut readers = Vec::new();
+
+        for t in 0..4u64 {
+            let path = temp_path(&format!("shared_cache_{t}"));
+            let _ = fs::remove_file(&path);
+            let entries = sample_entries(50);
+            let w = SSTableWriter::new(&path).with_block_size(64);
+            w.write(entries.iter().cloned()).unwrap();
+            readers.push((
+                SSTableReader::open_with_cache(&path, Arc::clone(&cache), t).unwrap(),
+                entries,
+                path,
+            ));
+        }
+
+        for (reader, entries, _) in &readers {
+            for (k, v) in entries {
+                assert_eq!(reader.get(k).unwrap(), Some(v.clone()));
+            }
+        }
+        assert!(cache.current_bytes() <= cache.capacity_bytes());
+
+        // Evicting one table keeps the others readable.
+        cache.evict_table(0);
+        let (reader, entries, _) = &readers[1];
+        for (k, v) in entries {
+            assert_eq!(reader.get(k).unwrap(), Some(v.clone()));
+        }
+
+        for (_, _, path) in &readers {
+            fs::remove_file(path).ok();
+        }
     }
 }
