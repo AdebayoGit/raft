@@ -21,13 +21,21 @@ pub struct Tag {
 
 /// An observed-remove set where concurrent adds win over removes.
 ///
-/// Internally tracks every live `(element → {tags})` mapping. Removing an
-/// element only removes the tags that were visible at the time of removal;
-/// a concurrent add with a new tag survives.
+/// Internally tracks every live `(element → {tags})` mapping plus a
+/// tombstone set of removed tags. Removing an element tombstones only the
+/// tags that were visible at the time of removal, so a concurrent add with
+/// a new tag survives — and, crucially, a merge with a stale replica that
+/// still carries a tombstoned tag cannot resurrect the element.
+///
+/// Tombstones grow with the number of removes; compaction of tombstones
+/// that every peer has observed is a future optimisation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrSet<T: Eq + std::hash::Hash> {
     /// Maps each element to the set of tags that assert its presence.
     entries: HashMap<T, HashSet<Tag>>,
+    /// Tags whose adds have been observed and removed.
+    #[serde(default)]
+    tombstones: HashSet<Tag>,
 }
 
 impl<T: Eq + std::hash::Hash> Default for OrSet<T> {
@@ -40,6 +48,7 @@ impl<T: Eq + std::hash::Hash> OrSet<T> {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            tombstones: HashSet::new(),
         }
     }
 
@@ -57,7 +66,13 @@ impl<T: Eq + std::hash::Hash> OrSet<T> {
     ///
     /// Returns `true` if the element was present and removed.
     pub fn remove(&mut self, element: &T) -> bool {
-        self.entries.remove(element).is_some()
+        match self.entries.remove(element) {
+            Some(tags) => {
+                self.tombstones.extend(tags);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Returns `true` if the element is in the set (has at least one live tag).
@@ -86,15 +101,33 @@ impl<T: Eq + std::hash::Hash> OrSet<T> {
 impl<T: Eq + std::hash::Hash + Clone> Merge for OrSet<T> {
     /// Merges another OR-Set into this one.
     ///
-    /// For each element, the resulting tag set is the union of tags from both
-    /// sides. An element present in only one side keeps its tags (add-wins).
+    /// Tombstones are unioned first; each element's resulting tag set is
+    /// then the union of tags from both sides minus every tombstoned tag.
+    /// A remove observed on either side therefore sticks, while a
+    /// concurrent add (whose fresh tag no remove has observed) survives.
     fn merge(&mut self, other: &Self) {
+        self.tombstones.extend(other.tombstones.iter().copied());
+
         for (element, other_tags) in &other.entries {
-            let local_tags = self.entries.entry(element.clone()).or_default();
-            for tag in other_tags {
-                local_tags.insert(*tag);
+            let live: Vec<Tag> = other_tags
+                .iter()
+                .filter(|t| !self.tombstones.contains(t))
+                .copied()
+                .collect();
+            if !live.is_empty() {
+                self.entries
+                    .entry(element.clone())
+                    .or_default()
+                    .extend(live);
             }
         }
+
+        // Purge local tags that the other side has removed.
+        let tombstones = &self.tombstones;
+        self.entries.retain(|_, tags| {
+            tags.retain(|t| !tombstones.contains(t));
+            !tags.is_empty()
+        });
     }
 }
 
@@ -167,6 +200,38 @@ mod tests {
         // Merge: device B's concurrent add should resurrect apple.
         a.merge(&b);
         assert!(a.contains(&"apple"));
+    }
+
+    #[test]
+    fn merge_with_stale_replica_does_not_resurrect_removed_element() {
+        // A adds apple; B syncs (sees the same tag); A removes apple.
+        // Merging B's stale state back into A must not resurrect apple.
+        let mut a = OrSet::new();
+        a.add("apple", DEVICE_A, ts(100, 0));
+
+        let b = a.clone(); // stale replica still holds the tag
+
+        a.remove(&"apple");
+        assert!(!a.contains(&"apple"));
+
+        a.merge(&b);
+        assert!(
+            !a.contains(&"apple"),
+            "stale merge must not resurrect a removed element"
+        );
+    }
+
+    #[test]
+    fn remove_propagates_through_merge() {
+        // A adds apple; B syncs; B removes apple; A merges from B.
+        let mut a = OrSet::new();
+        a.add("apple", DEVICE_A, ts(100, 0));
+
+        let mut b = a.clone();
+        b.remove(&"apple");
+
+        a.merge(&b);
+        assert!(!a.contains(&"apple"), "remove must propagate via merge");
     }
 
     #[test]
