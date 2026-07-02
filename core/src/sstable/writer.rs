@@ -182,6 +182,9 @@ impl SSTableWriter {
         file.write_all(&footer)?;
 
         file.flush()?;
+        // fsync before the table is registered in the manifest — a crash
+        // must never leave the manifest referencing a partially-written file.
+        file.get_ref().sync_all()?;
         Ok(total_entries)
     }
 

@@ -161,6 +161,23 @@ impl Wal {
     pub fn sync_mode(&self) -> SyncMode {
         self.sync_mode
     }
+
+    /// Truncate the log to zero length in place and fsync.
+    ///
+    /// Used after a memtable flush once its contents are durable in an
+    /// SSTable. Keeps the same inode (no delete/recreate window where a
+    /// crash could leave no WAL at all).
+    pub fn reset(&mut self) -> Result<(), WalError> {
+        self.writer.flush()?;
+        let file = OpenOptions::new().write(true).open(&self.path)?;
+        file.set_len(0)?;
+        file.sync_all()?;
+        // Reopen the append writer so its position tracks the new EOF.
+        let file = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        self.writer = BufWriter::new(file);
+        self.appends_since_sync = 0;
+        Ok(())
+    }
 }
 
 /// Outcome of a [`Wal::recover`] pass.

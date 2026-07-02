@@ -431,6 +431,10 @@ impl StorageEngine {
         let writer = SSTableWriter::new(&out_path).with_block_size(self.config.block_size);
         writer.write(all_entries.into_iter())?;
 
+        // Make the new file's directory entry durable before the manifest
+        // references it (the file itself is fsynced by the writer).
+        sync_dir(out_path.parent().unwrap_or(Path::new(".")))?;
+
         let file_size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
         stats.tables_written += 1;
 
@@ -481,6 +485,11 @@ impl StorageEngine {
         let writer = SSTableWriter::new(&path).with_block_size(self.config.block_size);
         writer.write(entries.into_iter())?;
 
+        // Crash-ordering: the SSTable file is fsynced by the writer; also
+        // fsync its directory so the new directory entry is durable before
+        // the manifest references it.
+        sync_dir(path.parent().unwrap_or(Path::new(".")))?;
+
         let file_size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
 
         let meta = SSTableMeta {
@@ -494,10 +503,9 @@ impl StorageEngine {
         self.manifest.add_sstable(meta)?;
         self.manifest.set_sequence(self.sequence)?;
 
-        // Truncate WAL — memtable data is now durable in the SSTable.
-        let wal_path = self.db_dir.join("wal.log");
-        fs::write(&wal_path, b"")?;
-        self.wal = Wal::open_with_mode(&wal_path, self.config.wal_sync)?;
+        // Truncate WAL in place — memtable data is now durable in the
+        // SSTable and registered in the (fsynced) manifest.
+        self.wal.reset()?;
 
         Ok(())
     }
@@ -526,6 +534,22 @@ impl StorageEngine {
 
         HlcTimestamp::new(self.hlc_physical, self.hlc_logical)
     }
+}
+
+/// fsync a directory so that recently created/removed directory entries
+/// are durable. No-op on platforms where directories cannot be synced.
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows does not support fsync on directory handles via
+        // std::fs — metadata durability is handled by the filesystem.
+        let _ = dir;
+    }
+    Ok(())
 }
 
 /// Statistics returned after a compaction pass.
