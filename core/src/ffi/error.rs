@@ -35,4 +35,8 @@ pub enum RftError {
     /// may be in an inconsistent in-memory state; the caller should
     /// close and reopen the handle.
     InternalPanic = 10,
+    /// A database path failed validation: empty, contains `..`
+    /// components, or escapes the confinement root passed to
+    /// [`rft_open_at`](super::rft_open_at) (including via symlinks).
+    InvalidPath = 11,
 }

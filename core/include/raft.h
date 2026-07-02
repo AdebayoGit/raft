@@ -16,6 +16,25 @@
 
 
 /**
+ * Maximum accepted record payload length when decoding (16 MiB).
+ * Guards against corrupt/malicious length prefixes forcing huge allocations.
+ */
+#define MAX_RECORD_LEN ((16 * 1024) * 1024)
+
+/**
+ * Default maximum tolerated forward drift: 5 minutes.
+ */
+#define DEFAULT_MAX_DRIFT_MS ((5 * 60) * 1000)
+
+/**
+ * Maximum accepted payload length when decoding (16 MiB).
+ *
+ * A corrupt or malicious length prefix cannot force an arbitrarily large
+ * allocation — anything above this bound is rejected as corruption.
+ */
+#define MAX_PAYLOAD_LEN ((16 * 1024) * 1024)
+
+/**
  * Encoded size in bytes: 8 (physical) + 2 (logical).
  */
 #define HlcTimestamp_ENCODED_SIZE (8 + 2)
@@ -96,6 +115,22 @@ enum RftError
      */
     RFT_ERROR_UNKNOWN_SUBSCRIPTION = 9,
 #endif
+#if defined(RAFT_DB_FFI)
+    /**
+     * An internal panic was caught at the FFI boundary. The database
+     * may be in an inconsistent in-memory state; the caller should
+     * close and reopen the handle.
+     */
+    RFT_ERROR_INTERNAL_PANIC = 10,
+#endif
+#if defined(RAFT_DB_FFI)
+    /**
+     * A database path failed validation: empty, contains `..`
+     * components, or escapes the confinement root passed to
+     * [`rft_open_at`](super::rft_open_at) (including via symlinks).
+     */
+    RFT_ERROR_INVALID_PATH = 11,
+#endif
 };
 #ifndef __cplusplus
 typedef uint32_t RftError;
@@ -158,12 +193,36 @@ rft_ struct RaftDb *rft_open(const char *path, RftError *out_err);
 
 #if defined(RAFT_DB_FFI)
 /**
- * Close and free a database handle. Aborts any pending observer tasks
- * before dropping the runtime.
+ * Open or create a database named `name` strictly inside the directory
+ * `root` — the app-sandbox variant of [`rft_open`].
+ *
+ * Bindings should prefer this over `rft_open`, passing their platform's
+ * app-private storage directory (`getFilesDir()` on Android,
+ * Application Support on iOS/macOS) as `root`. `name` must be a
+ * relative path; `..` components, absolute paths, and symlinks that
+ * escape `root` are rejected with [`RftError::InvalidPath`].
+ *
+ * # Safety
+ *
+ * - `root` and `name` must be valid null-terminated UTF-8 C strings.
+ * - `out_err` must be a valid pointer to an `RftError`, or null.
+ */
+rft_ struct RaftDb *rft_open_at(const char *root, const char *name, RftError *out_err);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Close and free a database handle. Aborts any pending observer tasks,
+ * then blocks until the observer runtime has fully shut down — after
+ * this returns, no observer callback will ever fire again, so the
+ * caller may safely free any `user_data` it passed to `rft_observe`.
  *
  * # Safety
  *
  * - `db` must be a handle returned by [`rft_open`], or null (no-op).
+ *   Passing an already-closed or foreign pointer is a safe no-op.
+ * - No other thread may be using `db` concurrently with this call.
+ * - Must not be called from inside an observer callback (deadlock).
  * - After this call, `db` is dangling and must not be used.
  */
 rft_ void rft_close(struct RaftDb *db);
@@ -435,7 +494,8 @@ RftError rft_query_execute(struct RaftDb *db,
 
 #if defined(RAFT_DB_FFI)
 /**
- * Number of documents in a query result. Returns 0 for null handles.
+ * Number of documents in a query result. Returns 0 for null, freed, or
+ * otherwise invalid handles.
  *
  * # Safety
  *
@@ -465,7 +525,8 @@ RftError rft_query_result_get(const struct RaftQueryResult *result,
 
 #if defined(RAFT_DB_FFI)
 /**
- * Free a query result handle. Safe to call with null (no-op).
+ * Free a query result handle. Safe to call with null (no-op). Freeing
+ * an already-freed or foreign pointer is also a safe no-op.
  *
  * # Safety
  *

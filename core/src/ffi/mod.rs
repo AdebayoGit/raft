@@ -6,6 +6,9 @@
 //!
 //! ## Surface
 //!
+//! - **Open** — [`rft_open`] (validated absolute path) and
+//!   [`rft_open_at`] (path confined to an app-sandbox root; preferred
+//!   for bindings).
 //! - **KV ops** — [`rft_put`] / [`rft_get`] / [`rft_delete`]: low-level
 //!   byte-key/byte-value access on the underlying engine.
 //! - **Collection ops** — `rft_collection_*`: typed document CRUD with
@@ -59,10 +62,62 @@ pub use transaction::{
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
+use std::path::{Component, Path, PathBuf};
 use std::ptr;
 use std::slice;
 
 use crate::database::Database;
+
+/// Reject database paths that are empty or contain `..` components —
+/// the traversal vector for attacker-influenced paths (deep links etc.).
+fn validate_open_path(raw: &str) -> Result<(), RftError> {
+    if raw.is_empty() {
+        return Err(RftError::InvalidPath);
+    }
+    if Path::new(raw)
+        .components()
+        .any(|c| matches!(c, Component::ParentDir))
+    {
+        return Err(RftError::InvalidPath);
+    }
+    Ok(())
+}
+
+/// Resolve `name` strictly inside `root`, defeating both `..` traversal
+/// and symlink escapes.
+///
+/// `name` must be relative with only normal components. `root` must
+/// exist; it is canonicalized, and the deepest existing ancestor of the
+/// joined path is canonicalized and required to stay under the root —
+/// so a symlink planted inside the sandbox cannot redirect the database
+/// outside it.
+fn resolve_confined(root: &str, name: &str) -> Result<PathBuf, RftError> {
+    if root.is_empty() || name.is_empty() {
+        return Err(RftError::InvalidPath);
+    }
+    let name = Path::new(name);
+    if !name
+        .components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(RftError::InvalidPath);
+    }
+
+    let root = std::fs::canonicalize(root).map_err(|_| RftError::InvalidPath)?;
+    let joined = root.join(name);
+
+    // Canonicalize the deepest existing ancestor (the DB dir itself may
+    // not exist yet) and verify it still resolves under the root.
+    let mut existing = joined.as_path();
+    while !existing.exists() {
+        existing = existing.parent().ok_or(RftError::InvalidPath)?;
+    }
+    let resolved = std::fs::canonicalize(existing).map_err(|_| RftError::InvalidPath)?;
+    if !resolved.starts_with(&root) {
+        return Err(RftError::InvalidPath);
+    }
+    Ok(joined)
+}
 
 /// Open or create a database at `path`.
 ///
@@ -106,7 +161,80 @@ unsafe fn rft_open_impl(path: *const c_char, out_err: *mut RftError) -> *mut Raf
         }
     };
 
-    match Database::open(c_str) {
+    if let Err(e) = validate_open_path(c_str) {
+        if !out_err.is_null() {
+            unsafe { ptr::write(out_err, e) };
+        }
+        return ptr::null_mut();
+    }
+
+    unsafe { open_database(Path::new(c_str), out_err) }
+}
+
+/// Open or create a database named `name` strictly inside the directory
+/// `root` — the app-sandbox variant of [`rft_open`].
+///
+/// Bindings should prefer this over `rft_open`, passing their platform's
+/// app-private storage directory (`getFilesDir()` on Android,
+/// Application Support on iOS/macOS) as `root`. `name` must be a
+/// relative path; `..` components, absolute paths, and symlinks that
+/// escape `root` are rejected with [`RftError::InvalidPath`].
+///
+/// # Safety
+///
+/// - `root` and `name` must be valid null-terminated UTF-8 C strings.
+/// - `out_err` must be a valid pointer to an `RftError`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn rft_open_at(
+    root: *const c_char,
+    name: *const c_char,
+    out_err: *mut RftError,
+) -> *mut RaftDb {
+    guard_or(ptr::null_mut(), || {
+        if !out_err.is_null() {
+            unsafe { ptr::write(out_err, RftError::InternalPanic) };
+        }
+
+        if root.is_null() || name.is_null() {
+            if !out_err.is_null() {
+                unsafe { ptr::write(out_err, RftError::NullPointer) };
+            }
+            return ptr::null_mut();
+        }
+
+        let (root, name) = match (
+            unsafe { CStr::from_ptr(root) }.to_str(),
+            unsafe { CStr::from_ptr(name) }.to_str(),
+        ) {
+            (Ok(r), Ok(n)) => (r, n),
+            _ => {
+                if !out_err.is_null() {
+                    unsafe { ptr::write(out_err, RftError::InvalidUtf8) };
+                }
+                return ptr::null_mut();
+            }
+        };
+
+        match resolve_confined(root, name) {
+            Ok(path) => unsafe { open_database(&path, out_err) },
+            Err(e) => {
+                if !out_err.is_null() {
+                    unsafe { ptr::write(out_err, e) };
+                }
+                ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// Shared tail of [`rft_open`] / [`rft_open_at`]: open the database at a
+/// validated path and register the handle.
+///
+/// # Safety
+///
+/// `out_err` must be a valid pointer to an `RftError`, or null.
+unsafe fn open_database(path: &Path, out_err: *mut RftError) -> *mut RaftDb {
+    match Database::open(path) {
         Ok(db) => {
             if !out_err.is_null() {
                 unsafe { ptr::write(out_err, RftError::Ok) };
@@ -560,6 +688,90 @@ mod tests {
             let db = rft_open(ptr::null(), &mut err);
             assert!(db.is_null());
             assert_eq!(err, RftError::NullPointer);
+        }
+    }
+
+    #[test]
+    fn open_rejects_parent_dir_traversal() {
+        unsafe {
+            let dir = temp_dir("traversal_base");
+            std::fs::create_dir_all(&dir).unwrap();
+            let sneaky = format!("{}/../escaped_db", dir.to_str().unwrap());
+            let path = CString::new(sneaky).unwrap();
+            let mut err = RftError::Ok;
+            let db = rft_open(path.as_ptr(), &mut err);
+            assert!(db.is_null());
+            assert_eq!(err, RftError::InvalidPath);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn open_rejects_empty_path() {
+        unsafe {
+            let path = CString::new("").unwrap();
+            let mut err = RftError::Ok;
+            let db = rft_open(path.as_ptr(), &mut err);
+            assert!(db.is_null());
+            assert_eq!(err, RftError::InvalidPath);
+        }
+    }
+
+    #[test]
+    fn open_at_confines_to_root() {
+        unsafe {
+            let root_dir = temp_dir("open_at_root");
+            std::fs::create_dir_all(&root_dir).unwrap();
+            let root = CString::new(root_dir.to_str().unwrap()).unwrap();
+            let mut err = RftError::Ok;
+
+            // Plain name inside the root works.
+            let name = CString::new("mydb").unwrap();
+            let db = rft_open_at(root.as_ptr(), name.as_ptr(), &mut err);
+            assert!(!db.is_null(), "confined open failed: {err:?}");
+            assert_eq!(err, RftError::Ok);
+            rft_close(db);
+
+            // `..` in the name is rejected.
+            for bad in ["../outside", "a/../../outside", ".."] {
+                let name = CString::new(bad).unwrap();
+                let db = rft_open_at(root.as_ptr(), name.as_ptr(), &mut err);
+                assert!(db.is_null(), "{bad} must be rejected");
+                assert_eq!(err, RftError::InvalidPath, "{bad}");
+            }
+
+            // Absolute names are rejected.
+            let abs = CString::new("/tmp/abs_db").unwrap();
+            let db = rft_open_at(root.as_ptr(), abs.as_ptr(), &mut err);
+            assert!(db.is_null());
+            assert_eq!(err, RftError::InvalidPath);
+
+            std::fs::remove_dir_all(&root_dir).ok();
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn open_at_rejects_symlink_escape() {
+        unsafe {
+            let root_dir = temp_dir("open_at_symlink_root");
+            let outside_dir = temp_dir("open_at_symlink_outside");
+            std::fs::create_dir_all(&root_dir).unwrap();
+            std::fs::create_dir_all(&outside_dir).unwrap();
+
+            // Plant a symlink inside the sandbox pointing outside it.
+            let link = root_dir.join("escape");
+            std::os::unix::fs::symlink(&outside_dir, &link).unwrap();
+
+            let root = CString::new(root_dir.to_str().unwrap()).unwrap();
+            let name = CString::new("escape/db").unwrap();
+            let mut err = RftError::Ok;
+            let db = rft_open_at(root.as_ptr(), name.as_ptr(), &mut err);
+            assert!(db.is_null(), "symlink escape must be rejected");
+            assert_eq!(err, RftError::InvalidPath);
+
+            std::fs::remove_dir_all(&root_dir).ok();
+            std::fs::remove_dir_all(&outside_dir).ok();
         }
     }
 
