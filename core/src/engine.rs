@@ -46,7 +46,11 @@ pub struct StorageConfig {
     /// Compaction configuration.
     pub compaction: CompactionConfig,
     /// Device ID for WAL entries (128-bit UUID).
-    /// Default: 0 (single-device / testing).
+    ///
+    /// Default: 0, which means "generate a random id on first open and
+    /// persist it in the database directory". A fixed, shared id would
+    /// collide CRDT identities across installs (counter deltas, OR-Set
+    /// tags), so 0 is never used as an actual device id.
     pub device_id: u128,
     /// WAL durability policy. Default: [`SyncMode::Always`] — every
     /// acknowledged write survives power loss.
@@ -178,8 +182,15 @@ impl StorageEngine {
     /// On open: replays the manifest to learn which SSTables are live,
     /// then replays the WAL to recover any unflushed memtable state.
     pub fn open(db_dir: impl AsRef<Path>, config: StorageConfig) -> Result<Self, StorageError> {
+        let mut config = config;
         let db_dir = db_dir.as_ref().to_path_buf();
         fs::create_dir_all(&db_dir)?;
+
+        // Resolve the device identity: explicit config wins, otherwise
+        // load (or generate and persist) a random per-install id.
+        if config.device_id == 0 {
+            config.device_id = load_or_create_device_id(&db_dir)?;
+        }
 
         // Ensure level directories exist.
         let sstables_dir = db_dir.join("sstables");
@@ -434,6 +445,12 @@ impl StorageEngine {
         self.sequence
     }
 
+    /// The device id stamped on every WAL entry — either the configured
+    /// value or the persisted per-install id generated on first open.
+    pub fn device_id(&self) -> u128 {
+        self.config.device_id
+    }
+
     /// Path to the database directory.
     pub fn db_dir(&self) -> &Path {
         &self.db_dir
@@ -611,6 +628,44 @@ impl StorageEngine {
 
         HlcTimestamp::new(self.hlc_physical, self.hlc_logical)
     }
+}
+
+/// Load the persisted 128-bit device id from `DEVICE_ID`, or generate a
+/// random one and persist it durably on first open.
+///
+/// The id is never 0 — that value is reserved to mean "not configured".
+fn load_or_create_device_id(db_dir: &Path) -> Result<u128, StorageError> {
+    let path = db_dir.join("DEVICE_ID");
+
+    if let Ok(bytes) = fs::read(&path) {
+        if bytes.len() == 16 {
+            let id = u128::from_be_bytes(bytes.try_into().expect("length checked"));
+            if id != 0 {
+                return Ok(id);
+            }
+        }
+        // Malformed or zero — regenerate below.
+    }
+
+    let mut buf = [0u8; 16];
+    loop {
+        getrandom::fill(&mut buf).map_err(|e| {
+            StorageError::Io(std::io::Error::other(format!(
+                "failed to generate device id: {e}"
+            )))
+        })?;
+        if buf != [0u8; 16] {
+            break;
+        }
+    }
+
+    // Persist durably: file contents, then the directory entry.
+    let mut file = fs::File::create(&path)?;
+    std::io::Write::write_all(&mut file, &buf)?;
+    file.sync_all()?;
+    sync_dir(db_dir)?;
+
+    Ok(u128::from_be_bytes(buf))
 }
 
 /// fsync a directory so that recently created/removed directory entries
@@ -829,6 +884,55 @@ mod tests {
         assert_eq!(engine.get(b"b").unwrap(), Some(b"2".to_vec()));
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn device_id_generated_and_persisted_when_unset() {
+        let dir = temp_dir("device_id_gen");
+        let config = StorageConfig {
+            device_id: 0, // ask for auto-generation
+            ..default_config()
+        };
+
+        let first = {
+            let engine = StorageEngine::open(&dir, config.clone()).unwrap();
+            let id = engine.device_id();
+            assert_ne!(id, 0, "generated device id must be nonzero");
+            id
+        };
+
+        assert!(dir.join("DEVICE_ID").exists());
+
+        // Reopen: same id.
+        let engine = StorageEngine::open(&dir, config).unwrap();
+        assert_eq!(engine.device_id(), first);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explicit_device_id_is_respected() {
+        let dir = temp_dir("device_id_explicit");
+        let engine = StorageEngine::open(&dir, default_config()).unwrap();
+        assert_eq!(engine.device_id(), 0xDEAD);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn distinct_databases_get_distinct_device_ids() {
+        let dir_a = temp_dir("device_id_a");
+        let dir_b = temp_dir("device_id_b");
+        let config = StorageConfig {
+            device_id: 0,
+            ..default_config()
+        };
+
+        let a = StorageEngine::open(&dir_a, config.clone()).unwrap();
+        let b = StorageEngine::open(&dir_b, config).unwrap();
+        assert_ne!(a.device_id(), b.device_id());
+
+        fs::remove_dir_all(&dir_a).ok();
+        fs::remove_dir_all(&dir_b).ok();
     }
 
     #[test]
