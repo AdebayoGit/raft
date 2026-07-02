@@ -17,4 +17,7 @@ pub enum WalError {
         needed: usize,
         available: usize,
     },
+
+    #[error("payload length {len} at offset {offset} exceeds maximum {max}")]
+    PayloadTooLarge { offset: u64, len: usize, max: usize },
 }

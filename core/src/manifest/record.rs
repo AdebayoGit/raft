@@ -52,6 +52,14 @@ pub enum ManifestRecord {
 
 // ── Tag constants ──
 
+/// Maximum accepted record payload length when decoding (16 MiB).
+/// Guards against corrupt/malicious length prefixes forcing huge allocations.
+pub const MAX_RECORD_LEN: usize = 16 * 1024 * 1024;
+
+/// Minimum encoded size of an `SSTableMeta` (all keys empty):
+/// id(8) + level(4) + sk_len(4) + lk_len(4) + entry_count(8) + file_size(8).
+const MIN_META_SIZE: usize = 36;
+
 const TAG_ADD_TABLE: u8 = 1;
 const TAG_REMOVE_TABLE: u8 = 2;
 const TAG_SET_SEQUENCE: u8 = 3;
@@ -168,6 +176,14 @@ impl ManifestRecord {
 
         let payload_len = buf.get_u32() as usize;
 
+        // Reject implausible lengths before attempting to read/allocate.
+        if payload_len > MAX_RECORD_LEN {
+            return Err(ManifestError::CorruptRecord {
+                offset,
+                reason: format!("payload length {payload_len} exceeds maximum {MAX_RECORD_LEN}"),
+            });
+        }
+
         // payload + crc32
         if buf.remaining() < payload_len + 4 {
             return Err(ManifestError::CorruptRecord {
@@ -233,6 +249,17 @@ impl ManifestRecord {
                 }
                 let sequence = payload_cursor.get_u64();
                 let count = payload_cursor.get_u32() as usize;
+                // A valid snapshot needs at least MIN_META_SIZE bytes per
+                // table — reject counts the payload cannot possibly hold so
+                // a corrupt count can't force a huge preallocation.
+                if count > payload_cursor.remaining() / MIN_META_SIZE {
+                    return Err(ManifestError::CorruptRecord {
+                        offset,
+                        reason: format!(
+                            "snapshot table count {count} exceeds payload capacity"
+                        ),
+                    });
+                }
                 let mut tables = Vec::with_capacity(count);
                 for _ in 0..count {
                     let meta = SSTableMeta::decode(&mut payload_cursor)
@@ -343,6 +370,39 @@ mod tests {
         let mut cursor: &[u8] = truncated;
         let result = ManifestRecord::decode(&mut cursor, 0);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_rejects_oversized_payload_len() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&u32::MAX.to_be_bytes()); // bogus payload_len
+        bytes.extend_from_slice(&[0u8; 16]);
+        let mut cursor: &[u8] = &bytes;
+        let result = ManifestRecord::decode(&mut cursor, 3);
+        assert!(matches!(
+            result,
+            Err(ManifestError::CorruptRecord { offset: 3, .. })
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_snapshot_count_beyond_payload() {
+        // Hand-build a snapshot record whose count field claims far more
+        // tables than the payload could hold.
+        let mut payload = Vec::new();
+        payload.push(4u8); // TAG_SNAPSHOT
+        payload.put_u64(1); // sequence
+        payload.put_u32(u32::MAX); // bogus count
+
+        let mut bytes = Vec::new();
+        bytes.put_u32(payload.len() as u32);
+        let crc = crc32fast::hash(&payload);
+        bytes.extend_from_slice(&payload);
+        bytes.put_u32(crc);
+
+        let mut cursor: &[u8] = &bytes;
+        let result = ManifestRecord::decode(&mut cursor, 0);
+        assert!(matches!(result, Err(ManifestError::CorruptRecord { .. })));
     }
 
     #[test]

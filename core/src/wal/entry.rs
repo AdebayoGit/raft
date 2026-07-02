@@ -62,6 +62,12 @@ pub struct WalEntry {
 /// HLC (10) + device_id (16) + payload_len (4) + checksum (4) = 34 bytes.
 const ENTRY_OVERHEAD: usize = HlcTimestamp::ENCODED_SIZE + 16 + 4 + 4;
 
+/// Maximum accepted payload length when decoding (16 MiB).
+///
+/// A corrupt or malicious length prefix cannot force an arbitrarily large
+/// allocation — anything above this bound is rejected as corruption.
+pub const MAX_PAYLOAD_LEN: usize = 16 * 1024 * 1024;
+
 impl WalEntry {
     /// Creates a new entry, computing the checksum automatically.
     pub fn new(timestamp: HlcTimestamp, device_id: u128, payload: Vec<u8>) -> Self {
@@ -116,6 +122,15 @@ impl WalEntry {
         let timestamp = HlcTimestamp::decode(buf);
         let device_id = buf.get_u128();
         let payload_len = buf.get_u32() as usize;
+
+        // Reject implausible lengths before attempting to read/allocate.
+        if payload_len > MAX_PAYLOAD_LEN {
+            return Err(crate::wal::WalError::PayloadTooLarge {
+                offset,
+                len: payload_len,
+                max: MAX_PAYLOAD_LEN,
+            });
+        }
 
         // Now we need payload_len + 4 bytes for the checksum.
         let tail_size = payload_len + 4;
@@ -241,6 +256,29 @@ mod tests {
         let mut buf: &[u8] = &[];
         let result = WalEntry::decode(&mut buf, 0).expect("should not error");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn decode_rejects_oversized_payload_len() {
+        // Build a header claiming a payload far beyond MAX_PAYLOAD_LEN.
+        let mut bytes = Vec::new();
+        HlcTimestamp::new(1, 0).encode(&mut bytes);
+        bytes.extend_from_slice(&0u128.to_be_bytes());
+        bytes.extend_from_slice(&u32::MAX.to_be_bytes()); // bogus payload_len
+
+        let result = WalEntry::decode(&mut &bytes[..], 7);
+        assert!(matches!(
+            result,
+            Err(crate::wal::WalError::PayloadTooLarge { offset: 7, .. })
+        ));
+    }
+
+    #[test]
+    fn decode_accepts_payload_at_reasonable_size() {
+        let entry = WalEntry::new(HlcTimestamp::new(1, 0), 0, vec![0xAB; 1024]);
+        let bytes = entry.encode_to_vec();
+        let decoded = WalEntry::decode(&mut &bytes[..], 0).unwrap().unwrap();
+        assert_eq!(entry, decoded);
     }
 
     #[test]
