@@ -6,7 +6,9 @@
 //! trait.
 
 mod authority;
+mod drift;
 mod resolver;
 
 pub use authority::{MergeContext, SyncAuthority};
+pub use drift::{validate_drift, validate_drift_now, DriftError, DEFAULT_MAX_DRIFT_MS};
 pub use resolver::{ConflictResolver, CustomResolverFn, ResolveOutcome};
