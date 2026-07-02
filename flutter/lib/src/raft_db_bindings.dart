@@ -12,17 +12,16 @@ import 'dart:ffi' as ffi;
 class RaftDbBindings {
   /// Holds the symbol lookup function.
   final ffi.Pointer<T> Function<T extends ffi.NativeType>(String symbolName)
-      _lookup;
+  _lookup;
 
   /// The symbols are looked up in [dynamicLibrary].
   RaftDbBindings(ffi.DynamicLibrary dynamicLibrary)
-      : _lookup = dynamicLibrary.lookup;
+    : _lookup = dynamicLibrary.lookup;
 
   /// The symbols are looked up with [lookup].
   RaftDbBindings.fromLookup(
-      ffi.Pointer<T> Function<T extends ffi.NativeType>(String symbolName)
-          lookup)
-      : _lookup = lookup;
+    ffi.Pointer<T> Function<T extends ffi.NativeType>(String symbolName) lookup,
+  ) : _lookup = lookup;
 
   /// Open or create a database at `path`.
   ///
@@ -37,40 +36,48 @@ class RaftDbBindings {
     ffi.Pointer<ffi.Char> path,
     ffi.Pointer<ffi.Uint32> out_err,
   ) {
-    return _rft_open(
-      path,
-      out_err,
-    );
+    return _rft_open(path, out_err);
   }
 
-  late final _rft_openPtr = _lookup<
-      ffi.NativeFunction<
+  late final _rft_openPtr =
+      _lookup<
+        ffi.NativeFunction<
           ffi.Pointer<RaftDb> Function(
-              ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Uint32>)>>('rft_open');
-  late final _rft_open = _rft_openPtr.asFunction<
-      ffi.Pointer<RaftDb> Function(
-          ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Uint32>)>();
+            ffi.Pointer<ffi.Char>,
+            ffi.Pointer<ffi.Uint32>,
+          )
+        >
+      >('rft_open');
+  late final _rft_open = _rft_openPtr
+      .asFunction<
+        ffi.Pointer<RaftDb> Function(
+          ffi.Pointer<ffi.Char>,
+          ffi.Pointer<ffi.Uint32>,
+        )
+      >();
 
-  /// Close and free a database handle. Aborts any pending observer tasks
-  /// before dropping the runtime.
+  /// Close and free a database handle. Aborts any pending observer tasks,
+  /// then blocks until the observer runtime has fully shut down — after
+  /// this returns, no observer callback will ever fire again, so the
+  /// caller may safely free any `user_data` it passed to `rft_observe`.
   ///
   /// # Safety
   ///
   /// - `db` must be a handle returned by [`rft_open`], or null (no-op).
+  /// Passing an already-closed or foreign pointer is a safe no-op.
+  /// - No other thread may be using `db` concurrently with this call.
+  /// - Must not be called from inside an observer callback (deadlock).
   /// - After this call, `db` is dangling and must not be used.
-  void rft_close(
-    ffi.Pointer<RaftDb> db,
-  ) {
-    return _rft_close(
-      db,
-    );
+  void rft_close(ffi.Pointer<RaftDb> db) {
+    return _rft_close(db);
   }
 
   late final _rft_closePtr =
       _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<RaftDb>)>>(
-          'rft_close');
-  late final _rft_close =
-      _rft_closePtr.asFunction<void Function(ffi.Pointer<RaftDb>)>();
+        'rft_close',
+      );
+  late final _rft_close = _rft_closePtr
+      .asFunction<void Function(ffi.Pointer<RaftDb>)>();
 
   /// Insert or update a key-value pair on the raw engine.
   ///
@@ -86,22 +93,31 @@ class RaftDbBindings {
     ffi.Pointer<ffi.Uint8> value,
     int value_len,
   ) {
-    return _rft_put(
-      db,
-      key,
-      key_len,
-      value,
-      value_len,
-    );
+    return _rft_put(db, key, key_len, value, value_len);
   }
 
-  late final _rft_putPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Uint32 Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Uint8>,
-              ffi.UintPtr, ffi.Pointer<ffi.Uint8>, ffi.UintPtr)>>('rft_put');
-  late final _rft_put = _rft_putPtr.asFunction<
-      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Uint8>, int,
-          ffi.Pointer<ffi.Uint8>, int)>();
+  late final _rft_putPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Uint32 Function(
+            ffi.Pointer<RaftDb>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.UintPtr,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.UintPtr,
+          )
+        >
+      >('rft_put');
+  late final _rft_put = _rft_putPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<RaftDb>,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+        )
+      >();
 
   /// Look up a key on the raw engine.
   ///
@@ -127,26 +143,31 @@ class RaftDbBindings {
     ffi.Pointer<ffi.Uint8> out_value,
     ffi.Pointer<ffi.UintPtr> out_len,
   ) {
-    return _rft_get(
-      db,
-      key,
-      key_len,
-      out_value,
-      out_len,
-    );
+    return _rft_get(db, key, key_len, out_value, out_len);
   }
 
-  late final _rft_getPtr = _lookup<
-      ffi.NativeFunction<
+  late final _rft_getPtr =
+      _lookup<
+        ffi.NativeFunction<
           ffi.Uint32 Function(
-              ffi.Pointer<RaftDb>,
-              ffi.Pointer<ffi.Uint8>,
-              ffi.UintPtr,
-              ffi.Pointer<ffi.Uint8>,
-              ffi.Pointer<ffi.UintPtr>)>>('rft_get');
-  late final _rft_get = _rft_getPtr.asFunction<
-      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Uint8>, int,
-          ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.UintPtr>)>();
+            ffi.Pointer<RaftDb>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.UintPtr,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Pointer<ffi.UintPtr>,
+          )
+        >
+      >('rft_get');
+  late final _rft_get = _rft_getPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<RaftDb>,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+          ffi.Pointer<ffi.Uint8>,
+          ffi.Pointer<ffi.UintPtr>,
+        )
+      >();
 
   /// Delete a key on the raw engine.
   ///
@@ -162,19 +183,23 @@ class RaftDbBindings {
     ffi.Pointer<ffi.Uint8> key,
     int key_len,
   ) {
-    return _rft_delete(
-      db,
-      key,
-      key_len,
-    );
+    return _rft_delete(db, key, key_len);
   }
 
-  late final _rft_deletePtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Uint32 Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Uint8>,
-              ffi.UintPtr)>>('rft_delete');
-  late final _rft_delete = _rft_deletePtr.asFunction<
-      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Uint8>, int)>();
+  late final _rft_deletePtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Uint32 Function(
+            ffi.Pointer<RaftDb>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.UintPtr,
+          )
+        >
+      >('rft_delete');
+  late final _rft_delete = _rft_deletePtr
+      .asFunction<
+        int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Uint8>, int)
+      >();
 
   /// Insert or update a document in `collection`. The document's `id` field
   /// is honoured. The same id always maps to the same slot — repeated puts
@@ -191,21 +216,29 @@ class RaftDbBindings {
     ffi.Pointer<ffi.Uint8> doc_json,
     int doc_json_len,
   ) {
-    return _rft_collection_put(
-      db,
-      collection,
-      doc_json,
-      doc_json_len,
-    );
+    return _rft_collection_put(db, collection, doc_json, doc_json_len);
   }
 
-  late final _rft_collection_putPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Uint32 Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>,
-              ffi.Pointer<ffi.Uint8>, ffi.UintPtr)>>('rft_collection_put');
-  late final _rft_collection_put = _rft_collection_putPtr.asFunction<
-      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>,
-          ffi.Pointer<ffi.Uint8>, int)>();
+  late final _rft_collection_putPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Uint32 Function(
+            ffi.Pointer<RaftDb>,
+            ffi.Pointer<ffi.Char>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.UintPtr,
+          )
+        >
+      >('rft_collection_put');
+  late final _rft_collection_put = _rft_collection_putPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<RaftDb>,
+          ffi.Pointer<ffi.Char>,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+        )
+      >();
 
   /// Insert a document, letting the database assign a fresh id. Writes the
   /// assigned id to `*out_doc_id` on success.
@@ -230,17 +263,28 @@ class RaftDbBindings {
     );
   }
 
-  late final _rft_collection_put_autoPtr = _lookup<
-      ffi.NativeFunction<
+  late final _rft_collection_put_autoPtr =
+      _lookup<
+        ffi.NativeFunction<
           ffi.Uint32 Function(
-              ffi.Pointer<RaftDb>,
-              ffi.Pointer<ffi.Char>,
-              ffi.Pointer<ffi.Uint8>,
-              ffi.UintPtr,
-              ffi.Pointer<ffi.Uint64>)>>('rft_collection_put_auto');
-  late final _rft_collection_put_auto = _rft_collection_put_autoPtr.asFunction<
-      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>,
-          ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Uint64>)>();
+            ffi.Pointer<RaftDb>,
+            ffi.Pointer<ffi.Char>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.UintPtr,
+            ffi.Pointer<ffi.Uint64>,
+          )
+        >
+      >('rft_collection_put_auto');
+  late final _rft_collection_put_auto = _rft_collection_put_autoPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<RaftDb>,
+          ffi.Pointer<ffi.Char>,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+          ffi.Pointer<ffi.Uint64>,
+        )
+      >();
 
   /// Fetch a document by id, writing its JSON encoding to `out_buf`. On
   /// `BufferTooSmall` the required size is written to `*out_len` and no
@@ -260,26 +304,31 @@ class RaftDbBindings {
     ffi.Pointer<ffi.Uint8> out_buf,
     ffi.Pointer<ffi.UintPtr> out_len,
   ) {
-    return _rft_collection_get(
-      db,
-      collection,
-      doc_id,
-      out_buf,
-      out_len,
-    );
+    return _rft_collection_get(db, collection, doc_id, out_buf, out_len);
   }
 
-  late final _rft_collection_getPtr = _lookup<
-      ffi.NativeFunction<
+  late final _rft_collection_getPtr =
+      _lookup<
+        ffi.NativeFunction<
           ffi.Uint32 Function(
-              ffi.Pointer<RaftDb>,
-              ffi.Pointer<ffi.Char>,
-              ffi.Uint64,
-              ffi.Pointer<ffi.Uint8>,
-              ffi.Pointer<ffi.UintPtr>)>>('rft_collection_get');
-  late final _rft_collection_get = _rft_collection_getPtr.asFunction<
-      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>, int,
-          ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.UintPtr>)>();
+            ffi.Pointer<RaftDb>,
+            ffi.Pointer<ffi.Char>,
+            ffi.Uint64,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Pointer<ffi.UintPtr>,
+          )
+        >
+      >('rft_collection_get');
+  late final _rft_collection_get = _rft_collection_getPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<RaftDb>,
+          ffi.Pointer<ffi.Char>,
+          int,
+          ffi.Pointer<ffi.Uint8>,
+          ffi.Pointer<ffi.UintPtr>,
+        )
+      >();
 
   /// Delete a document. Returns [`RftError::Ok`] whether the document
   /// existed or not.
@@ -293,19 +342,23 @@ class RaftDbBindings {
     ffi.Pointer<ffi.Char> collection,
     int doc_id,
   ) {
-    return _rft_collection_delete(
-      db,
-      collection,
-      doc_id,
-    );
+    return _rft_collection_delete(db, collection, doc_id);
   }
 
-  late final _rft_collection_deletePtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Uint32 Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>,
-              ffi.Uint64)>>('rft_collection_delete');
-  late final _rft_collection_delete = _rft_collection_deletePtr.asFunction<
-      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>, int)>();
+  late final _rft_collection_deletePtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Uint32 Function(
+            ffi.Pointer<RaftDb>,
+            ffi.Pointer<ffi.Char>,
+            ffi.Uint64,
+          )
+        >
+      >('rft_collection_delete');
+  late final _rft_collection_delete = _rft_collection_deletePtr
+      .asFunction<
+        int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>, int)
+      >();
 
   /// Number of documents in `collection`. Writes the count to `*out_count`.
   ///
@@ -319,20 +372,27 @@ class RaftDbBindings {
     ffi.Pointer<ffi.Char> collection,
     ffi.Pointer<ffi.UintPtr> out_count,
   ) {
-    return _rft_collection_count(
-      db,
-      collection,
-      out_count,
-    );
+    return _rft_collection_count(db, collection, out_count);
   }
 
-  late final _rft_collection_countPtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Uint32 Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>,
-              ffi.Pointer<ffi.UintPtr>)>>('rft_collection_count');
-  late final _rft_collection_count = _rft_collection_countPtr.asFunction<
-      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>,
-          ffi.Pointer<ffi.UintPtr>)>();
+  late final _rft_collection_countPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Uint32 Function(
+            ffi.Pointer<RaftDb>,
+            ffi.Pointer<ffi.Char>,
+            ffi.Pointer<ffi.UintPtr>,
+          )
+        >
+      >('rft_collection_count');
+  late final _rft_collection_count = _rft_collection_countPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<RaftDb>,
+          ffi.Pointer<ffi.Char>,
+          ffi.Pointer<ffi.UintPtr>,
+        )
+      >();
 
   /// List all document ids in `collection`, sorted ascending.
   ///
@@ -353,24 +413,151 @@ class RaftDbBindings {
     ffi.Pointer<ffi.Uint64> out_ids,
     ffi.Pointer<ffi.UintPtr> out_len,
   ) {
-    return _rft_collection_list_ids(
+    return _rft_collection_list_ids(db, collection, out_ids, out_len);
+  }
+
+  late final _rft_collection_list_idsPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Uint32 Function(
+            ffi.Pointer<RaftDb>,
+            ffi.Pointer<ffi.Char>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.UintPtr>,
+          )
+        >
+      >('rft_collection_list_ids');
+  late final _rft_collection_list_ids = _rft_collection_list_idsPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<RaftDb>,
+          ffi.Pointer<ffi.Char>,
+          ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.UintPtr>,
+        )
+      >();
+
+  /// Register the Dart VM's `Dart_PostCObject_DL` function so observers
+  /// can deliver events to Dart `SendPort`s.
+  ///
+  /// Dart callers pass `NativeApi.postCObject.address` (from `dart:ffi`).
+  /// Must be called once per process before any `rft_observe_*_dart_port`
+  /// call; calling it again is harmless.
+  ///
+  /// # Safety
+  ///
+  /// - `post_cobject_fn` must be the address of the Dart VM's
+  /// `Dart_PostCObject_DL` function (or a function with an identical
+  /// ABI), and must remain valid for the lifetime of the process.
+  int rft_dart_init(ffi.Pointer<ffi.Void> post_cobject_fn) {
+    return _rft_dart_init(post_cobject_fn);
+  }
+
+  late final _rft_dart_initPtr =
+      _lookup<ffi.NativeFunction<ffi.Uint32 Function(ffi.Pointer<ffi.Void>)>>(
+        'rft_dart_init',
+      );
+  late final _rft_dart_init = _rft_dart_initPtr
+      .asFunction<int Function(ffi.Pointer<ffi.Void>)>();
+
+  /// Register a collection observer that delivers each mutation event to
+  /// the Dart `SendPort` `port` as a JSON string (same payload as
+  /// [`rft_observe`](super::rft_observe)).
+  ///
+  /// Requires a prior successful [`rft_dart_init`]; otherwise returns
+  /// [`RftError::DartApiNotInitialized`]. Cancel with
+  /// [`rft_unobserve`](super::rft_unobserve); closing the Dart
+  /// `ReceivePort` alone stops delivery but leaks the background task
+  /// until `rft_unobserve` or `rft_close`.
+  ///
+  /// # Safety
+  ///
+  /// - `db` must be a valid handle.
+  /// - `collection` must be a valid null-terminated UTF-8 C string.
+  /// - `port` must be a native port id obtained from a Dart `ReceivePort`.
+  /// - `out_sub_id` must be a valid `*mut u64`.
+  int rft_observe_dart_port(
+    ffi.Pointer<RaftDb> db,
+    ffi.Pointer<ffi.Char> collection,
+    int port,
+    ffi.Pointer<ffi.Uint64> out_sub_id,
+  ) {
+    return _rft_observe_dart_port(db, collection, port, out_sub_id);
+  }
+
+  late final _rft_observe_dart_portPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Uint32 Function(
+            ffi.Pointer<RaftDb>,
+            ffi.Pointer<ffi.Char>,
+            ffi.Int64,
+            ffi.Pointer<ffi.Uint64>,
+          )
+        >
+      >('rft_observe_dart_port');
+  late final _rft_observe_dart_port = _rft_observe_dart_portPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<RaftDb>,
+          ffi.Pointer<ffi.Char>,
+          int,
+          ffi.Pointer<ffi.Uint64>,
+        )
+      >();
+
+  /// Register a live-query observer that delivers each
+  /// [`QueryDiff`](crate::reactive::QueryDiff) to the Dart `SendPort`
+  /// `port` as a JSON string (same payload and initial-snapshot semantics
+  /// as [`rft_observe_query`](super::rft_observe_query)).
+  ///
+  /// Requires a prior successful [`rft_dart_init`]; otherwise returns
+  /// [`RftError::DartApiNotInitialized`].
+  ///
+  /// # Safety
+  ///
+  /// - `db` must be a valid handle.
+  /// - `query_json` must be a valid UTF-8 buffer of `query_json_len` bytes.
+  /// - `port` must be a native port id obtained from a Dart `ReceivePort`.
+  /// - `out_sub_id` must be a valid `*mut u64`.
+  int rft_observe_query_dart_port(
+    ffi.Pointer<RaftDb> db,
+    ffi.Pointer<ffi.Uint8> query_json,
+    int query_json_len,
+    int port,
+    ffi.Pointer<ffi.Uint64> out_sub_id,
+  ) {
+    return _rft_observe_query_dart_port(
       db,
-      collection,
-      out_ids,
-      out_len,
+      query_json,
+      query_json_len,
+      port,
+      out_sub_id,
     );
   }
 
-  late final _rft_collection_list_idsPtr = _lookup<
-      ffi.NativeFunction<
+  late final _rft_observe_query_dart_portPtr =
+      _lookup<
+        ffi.NativeFunction<
           ffi.Uint32 Function(
-              ffi.Pointer<RaftDb>,
-              ffi.Pointer<ffi.Char>,
-              ffi.Pointer<ffi.Uint64>,
-              ffi.Pointer<ffi.UintPtr>)>>('rft_collection_list_ids');
-  late final _rft_collection_list_ids = _rft_collection_list_idsPtr.asFunction<
-      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Char>,
-          ffi.Pointer<ffi.Uint64>, ffi.Pointer<ffi.UintPtr>)>();
+            ffi.Pointer<RaftDb>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.UintPtr,
+            ffi.Int64,
+            ffi.Pointer<ffi.Uint64>,
+          )
+        >
+      >('rft_observe_query_dart_port');
+  late final _rft_observe_query_dart_port = _rft_observe_query_dart_portPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<RaftDb>,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+          int,
+          ffi.Pointer<ffi.Uint64>,
+        )
+      >();
 
   /// Register an observer callback for `collection`. The callback fires
   /// whenever a document in that collection is inserted, updated, or
@@ -395,30 +582,31 @@ class RaftDbBindings {
     ffi.Pointer<ffi.Void> user_data,
     ffi.Pointer<ffi.Uint64> out_sub_id,
   ) {
-    return _rft_observe(
-      db,
-      collection,
-      callback,
-      user_data,
-      out_sub_id,
-    );
+    return _rft_observe(db, collection, callback, user_data, out_sub_id);
   }
 
-  late final _rft_observePtr = _lookup<
-      ffi.NativeFunction<
+  late final _rft_observePtr =
+      _lookup<
+        ffi.NativeFunction<
           ffi.Uint32 Function(
-              ffi.Pointer<RaftDb>,
-              ffi.Pointer<ffi.Char>,
-              RftObserveCallback,
-              ffi.Pointer<ffi.Void>,
-              ffi.Pointer<ffi.Uint64>)>>('rft_observe');
-  late final _rft_observe = _rft_observePtr.asFunction<
-      int Function(
+            ffi.Pointer<RaftDb>,
+            ffi.Pointer<ffi.Char>,
+            RftObserveCallback,
+            ffi.Pointer<ffi.Void>,
+            ffi.Pointer<ffi.Uint64>,
+          )
+        >
+      >('rft_observe');
+  late final _rft_observe = _rft_observePtr
+      .asFunction<
+        int Function(
           ffi.Pointer<RaftDb>,
           ffi.Pointer<ffi.Char>,
           RftObserveCallback,
           ffi.Pointer<ffi.Void>,
-          ffi.Pointer<ffi.Uint64>)>();
+          ffi.Pointer<ffi.Uint64>,
+        )
+      >();
 
   /// Register a *live query* subscription for `query_json`. The callback
   /// fires immediately with an initial-snapshot diff (every matching
@@ -462,23 +650,30 @@ class RaftDbBindings {
     );
   }
 
-  late final _rft_observe_queryPtr = _lookup<
-      ffi.NativeFunction<
+  late final _rft_observe_queryPtr =
+      _lookup<
+        ffi.NativeFunction<
           ffi.Uint32 Function(
-              ffi.Pointer<RaftDb>,
-              ffi.Pointer<ffi.Uint8>,
-              ffi.UintPtr,
-              RftObserveCallback,
-              ffi.Pointer<ffi.Void>,
-              ffi.Pointer<ffi.Uint64>)>>('rft_observe_query');
-  late final _rft_observe_query = _rft_observe_queryPtr.asFunction<
-      int Function(
+            ffi.Pointer<RaftDb>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.UintPtr,
+            RftObserveCallback,
+            ffi.Pointer<ffi.Void>,
+            ffi.Pointer<ffi.Uint64>,
+          )
+        >
+      >('rft_observe_query');
+  late final _rft_observe_query = _rft_observe_queryPtr
+      .asFunction<
+        int Function(
           ffi.Pointer<RaftDb>,
           ffi.Pointer<ffi.Uint8>,
           int,
           RftObserveCallback,
           ffi.Pointer<ffi.Void>,
-          ffi.Pointer<ffi.Uint64>)>();
+          ffi.Pointer<ffi.Uint64>,
+        )
+      >();
 
   /// Cancel a subscription previously created by [`rft_observe`] or
   /// [`rft_observe_query`]. Aborts the background task and removes it
@@ -488,22 +683,16 @@ class RaftDbBindings {
   /// # Safety
   ///
   /// - `db` must be a valid handle.
-  int rft_unobserve(
-    ffi.Pointer<RaftDb> db,
-    int sub_id,
-  ) {
-    return _rft_unobserve(
-      db,
-      sub_id,
-    );
+  int rft_unobserve(ffi.Pointer<RaftDb> db, int sub_id) {
+    return _rft_unobserve(db, sub_id);
   }
 
-  late final _rft_unobservePtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Uint32 Function(
-              ffi.Pointer<RaftDb>, ffi.Uint64)>>('rft_unobserve');
-  late final _rft_unobserve =
-      _rft_unobservePtr.asFunction<int Function(ffi.Pointer<RaftDb>, int)>();
+  late final _rft_unobservePtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Uint32 Function(ffi.Pointer<RaftDb>, ffi.Uint64)>
+      >('rft_unobserve');
+  late final _rft_unobserve = _rft_unobservePtr
+      .asFunction<int Function(ffi.Pointer<RaftDb>, int)>();
 
   /// Execute a query and return an opaque result handle. Caller must free
   /// it with [`rft_query_result_free`].
@@ -519,42 +708,44 @@ class RaftDbBindings {
     int query_json_len,
     ffi.Pointer<ffi.Pointer<RaftQueryResult>> out_result,
   ) {
-    return _rft_query_execute(
-      db,
-      query_json,
-      query_json_len,
-      out_result,
-    );
+    return _rft_query_execute(db, query_json, query_json_len, out_result);
   }
 
-  late final _rft_query_executePtr = _lookup<
-      ffi.NativeFunction<
+  late final _rft_query_executePtr =
+      _lookup<
+        ffi.NativeFunction<
           ffi.Uint32 Function(
-              ffi.Pointer<RaftDb>,
-              ffi.Pointer<ffi.Uint8>,
-              ffi.UintPtr,
-              ffi.Pointer<ffi.Pointer<RaftQueryResult>>)>>('rft_query_execute');
-  late final _rft_query_execute = _rft_query_executePtr.asFunction<
-      int Function(ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Uint8>, int,
-          ffi.Pointer<ffi.Pointer<RaftQueryResult>>)>();
+            ffi.Pointer<RaftDb>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.UintPtr,
+            ffi.Pointer<ffi.Pointer<RaftQueryResult>>,
+          )
+        >
+      >('rft_query_execute');
+  late final _rft_query_execute = _rft_query_executePtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<RaftDb>,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+          ffi.Pointer<ffi.Pointer<RaftQueryResult>>,
+        )
+      >();
 
-  /// Number of documents in a query result. Returns 0 for null handles.
+  /// Number of documents in a query result. Returns 0 for null, freed, or
+  /// otherwise invalid handles.
   ///
   /// # Safety
   ///
   /// - `result` must be a handle returned by [`rft_query_execute`], or null.
-  int rft_query_result_count(
-    ffi.Pointer<RaftQueryResult> result,
-  ) {
-    return _rft_query_result_count(
-      result,
-    );
+  int rft_query_result_count(ffi.Pointer<RaftQueryResult> result) {
+    return _rft_query_result_count(result);
   }
 
-  late final _rft_query_result_countPtr = _lookup<
-          ffi
-          .NativeFunction<ffi.UintPtr Function(ffi.Pointer<RaftQueryResult>)>>(
-      'rft_query_result_count');
+  late final _rft_query_result_countPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.UintPtr Function(ffi.Pointer<RaftQueryResult>)>
+      >('rft_query_result_count');
   late final _rft_query_result_count = _rft_query_result_countPtr
       .asFunction<int Function(ffi.Pointer<RaftQueryResult>)>();
 
@@ -573,42 +764,45 @@ class RaftDbBindings {
     ffi.Pointer<ffi.Uint8> out_buf,
     ffi.Pointer<ffi.UintPtr> out_len,
   ) {
-    return _rft_query_result_get(
-      result,
-      index,
-      out_buf,
-      out_len,
-    );
+    return _rft_query_result_get(result, index, out_buf, out_len);
   }
 
-  late final _rft_query_result_getPtr = _lookup<
-      ffi.NativeFunction<
+  late final _rft_query_result_getPtr =
+      _lookup<
+        ffi.NativeFunction<
           ffi.Uint32 Function(
-              ffi.Pointer<RaftQueryResult>,
-              ffi.UintPtr,
-              ffi.Pointer<ffi.Uint8>,
-              ffi.Pointer<ffi.UintPtr>)>>('rft_query_result_get');
-  late final _rft_query_result_get = _rft_query_result_getPtr.asFunction<
-      int Function(ffi.Pointer<RaftQueryResult>, int, ffi.Pointer<ffi.Uint8>,
-          ffi.Pointer<ffi.UintPtr>)>();
+            ffi.Pointer<RaftQueryResult>,
+            ffi.UintPtr,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Pointer<ffi.UintPtr>,
+          )
+        >
+      >('rft_query_result_get');
+  late final _rft_query_result_get = _rft_query_result_getPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<RaftQueryResult>,
+          int,
+          ffi.Pointer<ffi.Uint8>,
+          ffi.Pointer<ffi.UintPtr>,
+        )
+      >();
 
-  /// Free a query result handle. Safe to call with null (no-op).
+  /// Free a query result handle. Safe to call with null (no-op). Freeing
+  /// an already-freed or foreign pointer is also a safe no-op.
   ///
   /// # Safety
   ///
   /// - `result` must be a handle returned by [`rft_query_execute`], or null.
   /// - After this call, `result` is dangling and must not be reused.
-  void rft_query_result_free(
-    ffi.Pointer<RaftQueryResult> result,
-  ) {
-    return _rft_query_result_free(
-      result,
-    );
+  void rft_query_result_free(ffi.Pointer<RaftQueryResult> result) {
+    return _rft_query_result_free(result);
   }
 
-  late final _rft_query_result_freePtr = _lookup<
-          ffi.NativeFunction<ffi.Void Function(ffi.Pointer<RaftQueryResult>)>>(
-      'rft_query_result_free');
+  late final _rft_query_result_freePtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Void Function(ffi.Pointer<RaftQueryResult>)>
+      >('rft_query_result_free');
   late final _rft_query_result_free = _rft_query_result_freePtr
       .asFunction<void Function(ffi.Pointer<RaftQueryResult>)>();
 
@@ -623,20 +817,25 @@ class RaftDbBindings {
     ffi.Pointer<RaftDb> db,
     ffi.Pointer<ffi.Pointer<RaftTransaction>> out_txn,
   ) {
-    return _rft_transaction_begin(
-      db,
-      out_txn,
-    );
+    return _rft_transaction_begin(db, out_txn);
   }
 
-  late final _rft_transaction_beginPtr = _lookup<
-          ffi.NativeFunction<
-              ffi.Uint32 Function(ffi.Pointer<RaftDb>,
-                  ffi.Pointer<ffi.Pointer<RaftTransaction>>)>>(
-      'rft_transaction_begin');
-  late final _rft_transaction_begin = _rft_transaction_beginPtr.asFunction<
-      int Function(
-          ffi.Pointer<RaftDb>, ffi.Pointer<ffi.Pointer<RaftTransaction>>)>();
+  late final _rft_transaction_beginPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Uint32 Function(
+            ffi.Pointer<RaftDb>,
+            ffi.Pointer<ffi.Pointer<RaftTransaction>>,
+          )
+        >
+      >('rft_transaction_begin');
+  late final _rft_transaction_begin = _rft_transaction_beginPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<RaftDb>,
+          ffi.Pointer<ffi.Pointer<RaftTransaction>>,
+        )
+      >();
 
   /// Read a document inside the transaction. The version is recorded for
   /// conflict detection at commit time. JSON encoding is written to
@@ -659,26 +858,31 @@ class RaftDbBindings {
     ffi.Pointer<ffi.Uint8> out_buf,
     ffi.Pointer<ffi.UintPtr> out_len,
   ) {
-    return _rft_transaction_get(
-      txn,
-      collection,
-      doc_id,
-      out_buf,
-      out_len,
-    );
+    return _rft_transaction_get(txn, collection, doc_id, out_buf, out_len);
   }
 
-  late final _rft_transaction_getPtr = _lookup<
-      ffi.NativeFunction<
+  late final _rft_transaction_getPtr =
+      _lookup<
+        ffi.NativeFunction<
           ffi.Uint32 Function(
-              ffi.Pointer<RaftTransaction>,
-              ffi.Pointer<ffi.Char>,
-              ffi.Uint64,
-              ffi.Pointer<ffi.Uint8>,
-              ffi.Pointer<ffi.UintPtr>)>>('rft_transaction_get');
-  late final _rft_transaction_get = _rft_transaction_getPtr.asFunction<
-      int Function(ffi.Pointer<RaftTransaction>, ffi.Pointer<ffi.Char>, int,
-          ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.UintPtr>)>();
+            ffi.Pointer<RaftTransaction>,
+            ffi.Pointer<ffi.Char>,
+            ffi.Uint64,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Pointer<ffi.UintPtr>,
+          )
+        >
+      >('rft_transaction_get');
+  late final _rft_transaction_get = _rft_transaction_getPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<RaftTransaction>,
+          ffi.Pointer<ffi.Char>,
+          int,
+          ffi.Pointer<ffi.Uint8>,
+          ffi.Pointer<ffi.UintPtr>,
+        )
+      >();
 
   /// Buffer a write inside the transaction. Applied atomically on commit.
   ///
@@ -693,24 +897,29 @@ class RaftDbBindings {
     ffi.Pointer<ffi.Uint8> doc_json,
     int doc_json_len,
   ) {
-    return _rft_transaction_put(
-      txn,
-      collection,
-      doc_json,
-      doc_json_len,
-    );
+    return _rft_transaction_put(txn, collection, doc_json, doc_json_len);
   }
 
-  late final _rft_transaction_putPtr = _lookup<
-      ffi.NativeFunction<
+  late final _rft_transaction_putPtr =
+      _lookup<
+        ffi.NativeFunction<
           ffi.Uint32 Function(
-              ffi.Pointer<RaftTransaction>,
-              ffi.Pointer<ffi.Char>,
-              ffi.Pointer<ffi.Uint8>,
-              ffi.UintPtr)>>('rft_transaction_put');
-  late final _rft_transaction_put = _rft_transaction_putPtr.asFunction<
-      int Function(ffi.Pointer<RaftTransaction>, ffi.Pointer<ffi.Char>,
-          ffi.Pointer<ffi.Uint8>, int)>();
+            ffi.Pointer<RaftTransaction>,
+            ffi.Pointer<ffi.Char>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.UintPtr,
+          )
+        >
+      >('rft_transaction_put');
+  late final _rft_transaction_put = _rft_transaction_putPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<RaftTransaction>,
+          ffi.Pointer<ffi.Char>,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+        )
+      >();
 
   /// Buffer a delete inside the transaction.
   ///
@@ -723,19 +932,23 @@ class RaftDbBindings {
     ffi.Pointer<ffi.Char> collection,
     int doc_id,
   ) {
-    return _rft_transaction_delete(
-      txn,
-      collection,
-      doc_id,
-    );
+    return _rft_transaction_delete(txn, collection, doc_id);
   }
 
-  late final _rft_transaction_deletePtr = _lookup<
-      ffi.NativeFunction<
-          ffi.Uint32 Function(ffi.Pointer<RaftTransaction>,
-              ffi.Pointer<ffi.Char>, ffi.Uint64)>>('rft_transaction_delete');
-  late final _rft_transaction_delete = _rft_transaction_deletePtr.asFunction<
-      int Function(ffi.Pointer<RaftTransaction>, ffi.Pointer<ffi.Char>, int)>();
+  late final _rft_transaction_deletePtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Uint32 Function(
+            ffi.Pointer<RaftTransaction>,
+            ffi.Pointer<ffi.Char>,
+            ffi.Uint64,
+          )
+        >
+      >('rft_transaction_delete');
+  late final _rft_transaction_delete = _rft_transaction_deletePtr
+      .asFunction<
+        int Function(ffi.Pointer<RaftTransaction>, ffi.Pointer<ffi.Char>, int)
+      >();
 
   /// Validate the read set and atomically apply all buffered changes.
   /// Consumes the handle — it is freed regardless of outcome and must not
@@ -750,18 +963,14 @@ class RaftDbBindings {
   ///
   /// - `txn` must be a valid, active handle. After this call, `txn` is
   /// freed and dangling.
-  int rft_transaction_commit(
-    ffi.Pointer<RaftTransaction> txn,
-  ) {
-    return _rft_transaction_commit(
-      txn,
-    );
+  int rft_transaction_commit(ffi.Pointer<RaftTransaction> txn) {
+    return _rft_transaction_commit(txn);
   }
 
-  late final _rft_transaction_commitPtr = _lookup<
-          ffi
-          .NativeFunction<ffi.Uint32 Function(ffi.Pointer<RaftTransaction>)>>(
-      'rft_transaction_commit');
+  late final _rft_transaction_commitPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Uint32 Function(ffi.Pointer<RaftTransaction>)>
+      >('rft_transaction_commit');
   late final _rft_transaction_commit = _rft_transaction_commitPtr
       .asFunction<int Function(ffi.Pointer<RaftTransaction>)>();
 
@@ -773,17 +982,14 @@ class RaftDbBindings {
   /// - `txn` must be a valid handle returned by
   /// [`rft_transaction_begin`], or null (no-op).
   /// - After this call, `txn` is freed and dangling.
-  void rft_transaction_rollback(
-    ffi.Pointer<RaftTransaction> txn,
-  ) {
-    return _rft_transaction_rollback(
-      txn,
-    );
+  void rft_transaction_rollback(ffi.Pointer<RaftTransaction> txn) {
+    return _rft_transaction_rollback(txn);
   }
 
-  late final _rft_transaction_rollbackPtr = _lookup<
-          ffi.NativeFunction<ffi.Void Function(ffi.Pointer<RaftTransaction>)>>(
-      'rft_transaction_rollback');
+  late final _rft_transaction_rollbackPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Void Function(ffi.Pointer<RaftTransaction>)>
+      >('rft_transaction_rollback');
   late final _rft_transaction_rollback = _rft_transaction_rollbackPtr
       .asFunction<void Function(ffi.Pointer<RaftTransaction>)>();
 }
@@ -835,13 +1041,14 @@ final class __siginfo extends ffi.Struct {
 
 final class __sigaction_u extends ffi.Union {
   external ffi.Pointer<ffi.NativeFunction<ffi.Void Function(ffi.Int)>>
-      __sa_handler;
+  __sa_handler;
 
   external ffi.Pointer<
-          ffi.NativeFunction<
-              ffi.Void Function(
-                  ffi.Int, ffi.Pointer<__siginfo>, ffi.Pointer<ffi.Void>)>>
-      __sa_sigaction;
+    ffi.NativeFunction<
+      ffi.Void Function(ffi.Int, ffi.Pointer<__siginfo>, ffi.Pointer<ffi.Void>)
+    >
+  >
+  __sa_sigaction;
 }
 
 final class wait extends ffi.Opaque {}
@@ -883,24 +1090,42 @@ enum RftError {
 
   /// A subscription id passed to [`rft_unobserve`](super::rft_unobserve)
   /// is not registered.
-  RFT_ERROR_UNKNOWN_SUBSCRIPTION(9);
+  RFT_ERROR_UNKNOWN_SUBSCRIPTION(9),
+
+  /// An internal panic was caught at the FFI boundary. The database
+  /// may be in an inconsistent in-memory state; the caller should
+  /// close and reopen the handle.
+  RFT_ERROR_INTERNAL_PANIC(10),
+
+  /// A database path failed validation: empty, contains `..`
+  /// components, or escapes the confinement root passed to
+  /// [`rft_open_at`](super::rft_open_at) (including via symlinks).
+  RFT_ERROR_INVALID_PATH(11),
+
+  /// A `rft_observe_*_dart_port` function was called before
+  /// [`rft_dart_init`](super::rft_dart_init) registered the Dart VM's
+  /// `Dart_PostCObject_DL` function.
+  RFT_ERROR_DART_API_NOT_INITIALIZED(12);
 
   final int value;
   const RftError(this.value);
 
   static RftError fromValue(int value) => switch (value) {
-        0 => RFT_ERROR_OK,
-        1 => RFT_ERROR_NULL_POINTER,
-        2 => RFT_ERROR_INVALID_UTF8,
-        3 => RFT_ERROR_IO_ERROR,
-        4 => RFT_ERROR_NOT_FOUND,
-        5 => RFT_ERROR_BUFFER_TOO_SMALL,
-        6 => RFT_ERROR_INVALID_JSON,
-        7 => RFT_ERROR_TRANSACTION_CONFLICT,
-        8 => RFT_ERROR_INVALID_HANDLE,
-        9 => RFT_ERROR_UNKNOWN_SUBSCRIPTION,
-        _ => throw ArgumentError("Unknown value for RftError: $value"),
-      };
+    0 => RFT_ERROR_OK,
+    1 => RFT_ERROR_NULL_POINTER,
+    2 => RFT_ERROR_INVALID_UTF8,
+    3 => RFT_ERROR_IO_ERROR,
+    4 => RFT_ERROR_NOT_FOUND,
+    5 => RFT_ERROR_BUFFER_TOO_SMALL,
+    6 => RFT_ERROR_INVALID_JSON,
+    7 => RFT_ERROR_TRANSACTION_CONFLICT,
+    8 => RFT_ERROR_INVALID_HANDLE,
+    9 => RFT_ERROR_UNKNOWN_SUBSCRIPTION,
+    10 => RFT_ERROR_INTERNAL_PANIC,
+    11 => RFT_ERROR_INVALID_PATH,
+    12 => RFT_ERROR_DART_API_NOT_INITIALIZED,
+    _ => throw ArgumentError("Unknown value for RftError: $value"),
+  };
 }
 
 final class RaftDb extends ffi.Opaque {}
@@ -914,10 +1139,15 @@ final class RaftTransaction extends ffi.Opaque {}
 /// `event_json` is a null-terminated UTF-8 string valid only for the
 /// duration of the call. `user_data` is the opaque pointer passed to
 /// [`rft_observe`].
-typedef RftObserveCallback = ffi.Pointer<
-    ffi.NativeFunction<
-        ffi.Void Function(ffi.Pointer<ffi.Char> event_json,
-            ffi.Pointer<ffi.Void> user_data)>>;
+typedef RftObserveCallback =
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Char> event_json,
+          ffi.Pointer<ffi.Void> user_data,
+        )
+      >
+    >;
 
 const int __bool_true_false_are_defined = 1;
 
@@ -2474,5 +2704,11 @@ const int EXIT_SUCCESS = 0;
 const int RAND_MAX = 2147483647;
 
 const int _MALLOC_TYPE_MALLOC_BACKDEPLOY_PUBLIC = 1;
+
+const int MAX_RECORD_LEN = 16777216;
+
+const int DEFAULT_MAX_DRIFT_MS = 300000;
+
+const int MAX_PAYLOAD_LEN = 16777216;
 
 const int HlcTimestamp_ENCODED_SIZE = 10;

@@ -8,10 +8,6 @@ headers:
 
 compiler-opts:
   - '-w'
-  # The C header uses a bare `rft_` function-attribute prefix that
-  # cbindgen emits without a macro definition. Define it to nothing
-  # here so libclang can parse the header.
-  - '-Drft_='
 
 # Only emit the raft-specific symbols; exclude all system header noise.
 functions:
@@ -45,6 +41,10 @@ functions:
     - 'rft_observe'
     - 'rft_observe_query'
     - 'rft_unobserve'
+    # Dart-port observation (Dart_PostCObject_DL delivery)
+    - 'rft_dart_init'
+    - 'rft_observe_dart_port'
+    - 'rft_observe_query_dart_port'
 
 structs:
   include:

@@ -74,6 +74,21 @@ void main() {
       expect(ex.message.toLowerCase(), contains('subscription'));
     });
 
+    test('code 10 mentions panic', () {
+      final ex = RaftDbException.fromCode(10);
+      expect(ex.message.toLowerCase(), contains('panic'));
+    });
+
+    test('code 11 mentions path', () {
+      final ex = RaftDbException.fromCode(11);
+      expect(ex.message.toLowerCase(), contains('path'));
+    });
+
+    test('code 12 mentions Dart API', () {
+      final ex = RaftDbException.fromCode(12);
+      expect(ex.message, contains('Dart API'));
+    });
+
     test('unknown code falls back to generic message including code', () {
       final ex = RaftDbException.fromCode(99);
       expect(ex.code, 99);
@@ -82,7 +97,7 @@ void main() {
     });
 
     test('all known codes round-trip through code field', () {
-      for (final code in [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
+      for (final code in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
         final ex = RaftDbException.fromCode(code);
         expect(ex.code, code, reason: 'code $code should round-trip');
       }

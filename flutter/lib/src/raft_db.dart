@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:isolate';
@@ -7,6 +9,7 @@ import 'package:ffi/ffi.dart';
 
 import 'raft_collection.dart';
 import 'raft_db_bindings.dart' as bindings;
+import 'raft_events.dart';
 import 'raft_transaction.dart';
 
 /// Loads the native RaftDB library for the current platform.
@@ -46,6 +49,11 @@ class RaftDbException implements Exception {
       7 => 'Transaction commit conflicted with a concurrent write',
       8 => 'Native handle is invalid or already consumed',
       9 => 'Subscription id is not registered',
+      10 => 'Internal panic in native core; close and reopen the database',
+      11 =>
+        'Invalid database path (empty, contains "..", or escapes the '
+            'confinement root)',
+      12 => 'Dart API not initialized (rft_dart_init was not called)',
       _ => 'Unknown error (code $code)',
     };
     return RaftDbException(message, code: code);
@@ -137,8 +145,13 @@ class RaftDb {
       try {
         keyPtr.asTypedList(key.length).setAll(0, key);
         valPtr.asTypedList(value.length).setAll(0, value);
-        final code =
-            db.rft_put(handle, keyPtr, key.length, valPtr, value.length);
+        final code = db.rft_put(
+          handle,
+          keyPtr,
+          key.length,
+          valPtr,
+          value.length,
+        );
         if (code != bindings.RftError.RFT_ERROR_OK.value) {
           throw RaftDbException.fromCode(code);
         }
@@ -196,8 +209,13 @@ class RaftDb {
       final lenPtr = calloc<ffi.UintPtr>();
       try {
         // Phase 1: query required buffer size by passing a null output pointer.
-        final sizeCode =
-            db.rft_get(handle, keyPtr, key.length, ffi.nullptr, lenPtr);
+        final sizeCode = db.rft_get(
+          handle,
+          keyPtr,
+          key.length,
+          ffi.nullptr,
+          lenPtr,
+        );
         if (sizeCode == bindings.RftError.RFT_ERROR_NOT_FOUND.value) {
           return null;
         }
@@ -210,8 +228,13 @@ class RaftDb {
         final required = lenPtr.value;
         final bufPtr = malloc<ffi.Uint8>(required);
         try {
-          final readCode =
-              db.rft_get(handle, keyPtr, key.length, bufPtr, lenPtr);
+          final readCode = db.rft_get(
+            handle,
+            keyPtr,
+            key.length,
+            bufPtr,
+            lenPtr,
+          );
           if (readCode != bindings.RftError.RFT_ERROR_OK.value) {
             throw RaftDbException.fromCode(readCode);
           }
@@ -268,7 +291,11 @@ class RaftDb {
       try {
         jsonPtr.asTypedList(documentJson.length).setAll(0, documentJson);
         final code = db.rft_collection_put(
-            handle, cName.cast(), jsonPtr, documentJson.length);
+          handle,
+          cName.cast(),
+          jsonPtr,
+          documentJson.length,
+        );
         if (code != bindings.RftError.RFT_ERROR_OK.value) {
           throw RaftDbException.fromCode(code);
         }
@@ -293,7 +320,12 @@ class RaftDb {
       try {
         jsonPtr.asTypedList(documentJson.length).setAll(0, documentJson);
         final code = db.rft_collection_put_auto(
-            handle, cName.cast(), jsonPtr, documentJson.length, outId);
+          handle,
+          cName.cast(),
+          jsonPtr,
+          documentJson.length,
+          outId,
+        );
         if (code != bindings.RftError.RFT_ERROR_OK.value) {
           throw RaftDbException.fromCode(code);
         }
@@ -318,7 +350,12 @@ class RaftDb {
       final lenPtr = calloc<ffi.UintPtr>();
       try {
         final sizeCode = db.rft_collection_get(
-            handle, cName.cast(), docId, ffi.nullptr, lenPtr);
+          handle,
+          cName.cast(),
+          docId,
+          ffi.nullptr,
+          lenPtr,
+        );
         if (sizeCode == bindings.RftError.RFT_ERROR_NOT_FOUND.value) {
           return null;
         }
@@ -330,7 +367,12 @@ class RaftDb {
         final bufPtr = malloc<ffi.Uint8>(needed);
         try {
           final readCode = db.rft_collection_get(
-              handle, cName.cast(), docId, bufPtr, lenPtr);
+            handle,
+            cName.cast(),
+            docId,
+            bufPtr,
+            lenPtr,
+          );
           if (readCode != bindings.RftError.RFT_ERROR_OK.value) {
             throw RaftDbException.fromCode(readCode);
           }
@@ -399,7 +441,11 @@ class RaftDb {
       final lenPtr = calloc<ffi.UintPtr>();
       try {
         final sizeCode = db.rft_collection_list_ids(
-            handle, cName.cast(), ffi.nullptr, lenPtr);
+          handle,
+          cName.cast(),
+          ffi.nullptr,
+          lenPtr,
+        );
         if (sizeCode != bindings.RftError.RFT_ERROR_BUFFER_TOO_SMALL.value &&
             sizeCode != bindings.RftError.RFT_ERROR_OK.value) {
           throw RaftDbException.fromCode(sizeCode);
@@ -409,7 +455,11 @@ class RaftDb {
         final buf = malloc<ffi.Uint64>(needed);
         try {
           final readCode = db.rft_collection_list_ids(
-              handle, cName.cast(), buf, lenPtr);
+            handle,
+            cName.cast(),
+            buf,
+            lenPtr,
+          );
           if (readCode != bindings.RftError.RFT_ERROR_OK.value) {
             throw RaftDbException.fromCode(readCode);
           }
@@ -441,8 +491,12 @@ class RaftDb {
       final outResult = calloc<ffi.Pointer<bindings.RaftQueryResult>>();
       try {
         jsonPtr.asTypedList(queryJson.length).setAll(0, queryJson);
-        final execCode =
-            db.rft_query_execute(handle, jsonPtr, queryJson.length, outResult);
+        final execCode = db.rft_query_execute(
+          handle,
+          jsonPtr,
+          queryJson.length,
+          outResult,
+        );
         if (execCode != bindings.RftError.RFT_ERROR_OK.value) {
           throw RaftDbException.fromCode(execCode);
         }
@@ -455,7 +509,11 @@ class RaftDb {
             final lenPtr = calloc<ffi.UintPtr>();
             try {
               final sizeCode = db.rft_query_result_get(
-                  resultHandle, i, ffi.nullptr, lenPtr);
+                resultHandle,
+                i,
+                ffi.nullptr,
+                lenPtr,
+              );
               if (sizeCode !=
                       bindings.RftError.RFT_ERROR_BUFFER_TOO_SMALL.value &&
                   sizeCode != bindings.RftError.RFT_ERROR_OK.value) {
@@ -465,7 +523,11 @@ class RaftDb {
               final bufPtr = malloc<ffi.Uint8>(needed);
               try {
                 final readCode = db.rft_query_result_get(
-                    resultHandle, i, bufPtr, lenPtr);
+                  resultHandle,
+                  i,
+                  bufPtr,
+                  lenPtr,
+                );
                 if (readCode != bindings.RftError.RFT_ERROR_OK.value) {
                   throw RaftDbException.fromCode(readCode);
                 }
@@ -486,6 +548,157 @@ class RaftDb {
         calloc.free(outResult);
       }
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reactive observers
+  //
+  // Events are delivered from the Rust core to a Dart `ReceivePort` via
+  // `Dart_PostCObject_DL`: the VM copies each JSON payload into the port
+  // queue during the post call, so there is no native-callback lifetime
+  // hazard and no cross-isolate callback restriction.
+  // ---------------------------------------------------------------------------
+
+  /// Whether `rft_dart_init` has registered `Dart_PostCObject_DL` with
+  /// the native core. Process-wide, so static.
+  static bool _dartApiReady = false;
+
+  static void _ensureDartApi(bindings.RaftDbBindings db) {
+    if (_dartApiReady) return;
+    final code = db.rft_dart_init(
+      ffi.Pointer<ffi.Void>.fromAddress(ffi.NativeApi.postCObject.address),
+    );
+    if (code != bindings.RftError.RFT_ERROR_OK.value) {
+      throw RaftDbException.fromCode(code);
+    }
+    _dartApiReady = true;
+  }
+
+  /// Watch [collection] for mutations. Emits a [MutationEvent] each time
+  /// a document in the collection is inserted, updated, or deleted.
+  ///
+  /// The native subscription is registered on first listen and cancelled
+  /// when the subscription is cancelled. Events that arrive while the
+  /// native side is faster than the listener are buffered by the port.
+  Stream<MutationEvent> observeCollection(String collection) {
+    _assertOpen();
+    return _observeStream<MutationEvent>(
+      parse: (json) =>
+          MutationEvent.fromJson(jsonDecode(json) as Map<String, dynamic>),
+      register: (db, handle, port, outSub) {
+        final cName = collection.toNativeUtf8();
+        try {
+          return db.rft_observe_dart_port(handle, cName.cast(), port, outSub);
+        } finally {
+          malloc.free(cName);
+        }
+      },
+    );
+  }
+
+  /// Run a live query. Emits an initial [QueryDiff] snapshot (all
+  /// matching documents in `added`) as soon as the stream is listened
+  /// to, then a new diff every time a mutation changes the result set.
+  ///
+  /// [queryJson] uses the same predicate-query encoding as [executeQuery].
+  Stream<QueryDiff> observeQuery(Uint8List queryJson) {
+    _assertOpen();
+    return _observeStream<QueryDiff>(
+      parse: QueryDiff.fromJson,
+      register: (db, handle, port, outSub) {
+        final jsonPtr = malloc<ffi.Uint8>(queryJson.length);
+        try {
+          jsonPtr.asTypedList(queryJson.length).setAll(0, queryJson);
+          return db.rft_observe_query_dart_port(
+            handle,
+            jsonPtr,
+            queryJson.length,
+            port,
+            outSub,
+          );
+        } finally {
+          malloc.free(jsonPtr);
+        }
+      },
+    );
+  }
+
+  /// Shared plumbing for the observer streams: sets up a [ReceivePort],
+  /// registers the native subscription on listen, decodes each posted
+  /// JSON string with [parse], and unsubscribes on cancel.
+  Stream<T> _observeStream<T>({
+    required T Function(String json) parse,
+    required int Function(
+      bindings.RaftDbBindings db,
+      ffi.Pointer<bindings.RaftDb> handle,
+      int nativePort,
+      ffi.Pointer<ffi.Uint64> outSubId,
+    )
+    register,
+  }) {
+    final address = _address;
+    late final StreamController<T> controller;
+    ReceivePort? receivePort;
+    var subId = 0;
+
+    Future<void> stop() async {
+      receivePort?.close();
+      receivePort = null;
+      if (subId != 0) {
+        final id = subId;
+        subId = 0;
+        await Isolate.run(() {
+          final db = bindings.RaftDbBindings(_openLib());
+          db.rft_unobserve(
+            ffi.Pointer<bindings.RaftDb>.fromAddress(address),
+            id,
+          );
+        });
+      }
+    }
+
+    controller = StreamController<T>(
+      onListen: () {
+        final db = bindings.RaftDbBindings(_openLib());
+        _ensureDartApi(db);
+
+        final port = ReceivePort();
+        receivePort = port;
+        port.listen((message) {
+          if (message is! String) return;
+          try {
+            controller.add(parse(message));
+          } catch (e, st) {
+            controller.addError(e, st);
+          }
+        });
+
+        // Registration only spawns a background task in the core — it
+        // does not block — so it is safe to call on this isolate. It
+        // must NOT hop isolates: the SendPort belongs to this one.
+        final outSub = calloc<ffi.Uint64>();
+        try {
+          final code = register(
+            db,
+            ffi.Pointer<bindings.RaftDb>.fromAddress(address),
+            port.sendPort.nativePort,
+            outSub,
+          );
+          if (code != bindings.RftError.RFT_ERROR_OK.value) {
+            port.close();
+            receivePort = null;
+            controller.addError(RaftDbException.fromCode(code));
+            controller.close();
+            return;
+          }
+          subId = outSub.value;
+        } finally {
+          calloc.free(outSub);
+        }
+      },
+      onCancel: stop,
+    );
+    return controller.stream;
   }
 
   /// Begin a new transaction. The caller takes ownership of the returned

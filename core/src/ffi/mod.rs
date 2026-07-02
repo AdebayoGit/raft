@@ -19,6 +19,10 @@
 //!   reads/writes that commit atomically or roll back.
 //! - **Observers** — [`rft_observe`] / [`rft_unobserve`]: register a C
 //!   callback that fires on collection mutations.
+//! - **Dart observers** — [`rft_dart_init`] + [`rft_observe_dart_port`] /
+//!   [`rft_observe_query_dart_port`]: deliver events to a Dart
+//!   `SendPort` via `Dart_PostCObject_DL` (the VM copies each message,
+//!   so no callback-lifetime hazard).
 //!
 //! ## Memory ownership rules
 //!
@@ -37,6 +41,7 @@
 //! (required by observers) and `serde_json`.
 
 mod collection;
+mod dart_port;
 mod error;
 mod handle;
 mod observe;
@@ -48,6 +53,7 @@ pub use collection::{
     rft_collection_count, rft_collection_delete, rft_collection_get, rft_collection_list_ids,
     rft_collection_put, rft_collection_put_auto,
 };
+pub use dart_port::{rft_dart_init, rft_observe_dart_port, rft_observe_query_dart_port};
 pub use error::RftError;
 pub use handle::RaftDb;
 pub use observe::{rft_observe, rft_observe_query, rft_unobserve, RftObserveCallback};
@@ -1077,6 +1083,85 @@ mod tests {
             }
 
             assert_eq!(rft_unobserve(db, sub_id), RftError::Ok);
+            rft_close(db);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// Single test covering the whole Dart-port surface so the global
+    /// `POST_COBJECT` state is never raced by parallel test threads.
+    #[test]
+    fn dart_port_observers_post_copied_events() {
+        use dart_port::test_support::{fake_post_cobject_addr, messages_for, reset_post_cobject};
+
+        unsafe {
+            let (db, dir) = open_test_db("dart_port");
+            let coll = CString::new("users").unwrap();
+            let mut sub_id = 0u64;
+
+            // Uninitialized API → dedicated error, no subscription made.
+            reset_post_cobject();
+            assert_eq!(
+                rft_observe_dart_port(db, coll.as_ptr(), 71, &mut sub_id),
+                RftError::DartApiNotInitialized
+            );
+
+            // Null function pointer is rejected.
+            assert_eq!(rft_dart_init(ptr::null_mut()), RftError::NullPointer);
+
+            // Register the fake VM post function (copies during the call,
+            // same lifetime contract as Dart_PostCObject_DL).
+            assert_eq!(rft_dart_init(fake_post_cobject_addr()), RftError::Ok);
+
+            // Collection observer → mutation events posted to port 71.
+            assert_eq!(
+                rft_observe_dart_port(db, coll.as_ptr(), 71, &mut sub_id),
+                RftError::Ok
+            );
+            assert!(sub_id > 0);
+
+            let doc = r#"{"id":1,"fields":{"age":{"Int":30}}}"#;
+            rft_collection_put(db, coll.as_ptr(), doc.as_ptr(), doc.len());
+            std::thread::sleep(std::time::Duration::from_millis(150));
+
+            let events = messages_for(71);
+            assert!(!events.is_empty(), "expected a posted mutation event");
+            assert!(
+                events[0].contains("\"collection\":\"users\"") && events[0].contains("Insert"),
+                "unexpected event payload: {}",
+                events[0]
+            );
+            assert_eq!(rft_unobserve(db, sub_id), RftError::Ok);
+
+            // Live-query observer → initial snapshot posted synchronously
+            // to port 72, then diffs on mutation.
+            let query = br#"{"collection":"users"}"#;
+            let mut q_sub = 0u64;
+            assert_eq!(
+                rft_observe_query_dart_port(db, query.as_ptr(), query.len(), 72, &mut q_sub),
+                RftError::Ok
+            );
+            let snapshot = messages_for(72);
+            assert_eq!(snapshot.len(), 1, "snapshot must be posted synchronously");
+            assert!(
+                snapshot[0].contains("\"id\":1"),
+                "snapshot: {}",
+                snapshot[0]
+            );
+
+            let doc2 = r#"{"id":2,"fields":{"age":{"Int":40}}}"#;
+            rft_collection_put(db, coll.as_ptr(), doc2.as_ptr(), doc2.len());
+            std::thread::sleep(std::time::Duration::from_millis(300));
+
+            let all = messages_for(72);
+            assert!(all.len() >= 2, "expected a diff after mutation: {all:?}");
+            assert!(
+                all.last().unwrap().contains("\"id\":2"),
+                "diff should contain doc 2: {}",
+                all.last().unwrap()
+            );
+
+            assert_eq!(rft_unobserve(db, q_sub), RftError::Ok);
             rft_close(db);
             std::fs::remove_dir_all(&dir).ok();
         }

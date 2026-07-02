@@ -76,6 +76,24 @@ pub struct SubscriptionRegistry {
 
 static GLOBAL_OBSERVER_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// Insert `join_handle` into the handle's subscription registry and
+/// return the freshly assigned subscription id. Shared by the C-callback
+/// observers here and the Dart-port observers in [`super::dart_port`].
+pub(super) fn register_subscription(handle: &RaftDb, join_handle: JoinHandle<()>) -> u64 {
+    let id = {
+        let mut reg = handle
+            .subscriptions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        reg.next_id += 1;
+        let id = reg.next_id;
+        reg.handles.insert(id, join_handle);
+        id
+    };
+    GLOBAL_OBSERVER_COUNT.fetch_add(1, Ordering::Relaxed);
+    id
+}
+
 /// Register an observer callback for `collection`. The callback fires
 /// whenever a document in that collection is inserted, updated, or
 /// deleted.
@@ -151,18 +169,7 @@ pub unsafe extern "C" fn rft_observe(
             }
         });
 
-        let sub_id = {
-            let mut reg = handle
-                .subscriptions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            reg.next_id += 1;
-            let id = reg.next_id;
-            reg.handles.insert(id, join_handle);
-            id
-        };
-
-        GLOBAL_OBSERVER_COUNT.fetch_add(1, Ordering::Relaxed);
+        let sub_id = register_subscription(handle, join_handle);
         unsafe { ptr::write(out_sub_id, sub_id) };
         RftError::Ok
     })
@@ -239,18 +246,7 @@ pub unsafe extern "C" fn rft_observe_query(
             }
         });
 
-        let sub_id = {
-            let mut reg = handle
-                .subscriptions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            reg.next_id += 1;
-            let id = reg.next_id;
-            reg.handles.insert(id, join_handle);
-            id
-        };
-
-        GLOBAL_OBSERVER_COUNT.fetch_add(1, Ordering::Relaxed);
+        let sub_id = register_subscription(handle, join_handle);
         unsafe { ptr::write(out_sub_id, sub_id) };
         RftError::Ok
     })

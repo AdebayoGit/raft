@@ -131,6 +131,14 @@ enum RftError
      */
     RFT_ERROR_INVALID_PATH = 11,
 #endif
+#if defined(RAFT_DB_FFI)
+    /**
+     * A `rft_observe_*_dart_port` function was called before
+     * [`rft_dart_init`](super::rft_dart_init) registered the Dart VM's
+     * `Dart_PostCObject_DL` function.
+     */
+    RFT_ERROR_DART_API_NOT_INITIALIZED = 12,
+#endif
 };
 #ifndef __cplusplus
 typedef uint32_t RftError;
@@ -188,7 +196,7 @@ extern "C" {
  * - `path` must be a valid null-terminated UTF-8 C string.
  * - `out_err` must be a valid pointer to an `RftError`.
  */
-rft_ struct RaftDb *rft_open(const char *path, RftError *out_err);
+struct RaftDb *rft_open(const char *path, RftError *out_err);
 #endif
 
 #if defined(RAFT_DB_FFI)
@@ -207,7 +215,7 @@ rft_ struct RaftDb *rft_open(const char *path, RftError *out_err);
  * - `root` and `name` must be valid null-terminated UTF-8 C strings.
  * - `out_err` must be a valid pointer to an `RftError`, or null.
  */
-rft_ struct RaftDb *rft_open_at(const char *root, const char *name, RftError *out_err);
+struct RaftDb *rft_open_at(const char *root, const char *name, RftError *out_err);
 #endif
 
 #if defined(RAFT_DB_FFI)
@@ -225,7 +233,7 @@ rft_ struct RaftDb *rft_open_at(const char *root, const char *name, RftError *ou
  * - Must not be called from inside an observer callback (deadlock).
  * - After this call, `db` is dangling and must not be used.
  */
-rft_ void rft_close(struct RaftDb *db);
+void rft_close(struct RaftDb *db);
 #endif
 
 #if defined(RAFT_DB_FFI)
@@ -238,7 +246,6 @@ rft_ void rft_close(struct RaftDb *db);
  * - `key` must point to at least `key_len` readable bytes.
  * - `value` must point to at least `value_len` readable bytes.
  */
-rft_
 RftError rft_put(struct RaftDb *db,
                  const uint8_t *key,
                  uintptr_t key_len,
@@ -266,7 +273,6 @@ RftError rft_put(struct RaftDb *db,
  *   bytes, or be null if only querying the required size.
  * - `out_len` must be a valid, non-null pointer to a `usize`.
  */
-rft_
 RftError rft_get(struct RaftDb *db,
                  const uint8_t *key,
                  uintptr_t key_len,
@@ -286,7 +292,7 @@ RftError rft_get(struct RaftDb *db,
  * - `db` must be a valid, non-null handle from [`rft_open`].
  * - `key` must point to at least `key_len` readable bytes.
  */
-rft_ RftError rft_delete(struct RaftDb *db, const uint8_t *key, uintptr_t key_len);
+RftError rft_delete(struct RaftDb *db, const uint8_t *key, uintptr_t key_len);
 #endif
 
 #if defined(RAFT_DB_FFI)
@@ -301,7 +307,6 @@ rft_ RftError rft_delete(struct RaftDb *db, const uint8_t *key, uintptr_t key_le
  * - `collection` must be a valid null-terminated UTF-8 C string.
  * - `doc_json` must be a valid UTF-8 buffer of `doc_json_len` bytes.
  */
-rft_
 RftError rft_collection_put(struct RaftDb *db,
                             const char *collection,
                             const uint8_t *doc_json,
@@ -318,7 +323,6 @@ RftError rft_collection_put(struct RaftDb *db,
  * - All non-null pointers must point to valid memory of the appropriate
  *   size; `out_doc_id` must be a writable `*mut u64`.
  */
-rft_
 RftError rft_collection_put_auto(struct RaftDb *db,
                                  const char *collection,
                                  const uint8_t *doc_json,
@@ -340,7 +344,6 @@ RftError rft_collection_put_auto(struct RaftDb *db,
  *   the required size.
  * - `out_len` must be a valid `*mut usize`.
  */
-rft_
 RftError rft_collection_get(struct RaftDb *db,
                             const char *collection,
                             uint64_t doc_id,
@@ -358,7 +361,7 @@ RftError rft_collection_get(struct RaftDb *db,
  * - `db` must be a valid handle.
  * - `collection` must be a valid null-terminated UTF-8 C string.
  */
-rft_ RftError rft_collection_delete(struct RaftDb *db, const char *collection, uint64_t doc_id);
+RftError rft_collection_delete(struct RaftDb *db, const char *collection, uint64_t doc_id);
 #endif
 
 #if defined(RAFT_DB_FFI)
@@ -371,7 +374,7 @@ rft_ RftError rft_collection_delete(struct RaftDb *db, const char *collection, u
  * - `collection` must be a valid null-terminated UTF-8 C string.
  * - `out_count` must be a valid `*mut usize`.
  */
-rft_ RftError rft_collection_count(struct RaftDb *db, const char *collection, uintptr_t *out_count);
+RftError rft_collection_count(struct RaftDb *db, const char *collection, uintptr_t *out_count);
 #endif
 
 #if defined(RAFT_DB_FFI)
@@ -390,11 +393,77 @@ rft_ RftError rft_collection_count(struct RaftDb *db, const char *collection, ui
  * - `out_ids` must be writable for `*out_len * 8` bytes, or null.
  * - `out_len` must be a valid `*mut usize`.
  */
-rft_
 RftError rft_collection_list_ids(struct RaftDb *db,
                                  const char *collection,
                                  uint64_t *out_ids,
                                  uintptr_t *out_len);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Register the Dart VM's `Dart_PostCObject_DL` function so observers
+ * can deliver events to Dart `SendPort`s.
+ *
+ * Dart callers pass `NativeApi.postCObject.address` (from `dart:ffi`).
+ * Must be called once per process before any `rft_observe_*_dart_port`
+ * call; calling it again is harmless.
+ *
+ * # Safety
+ *
+ * - `post_cobject_fn` must be the address of the Dart VM's
+ *   `Dart_PostCObject_DL` function (or a function with an identical
+ *   ABI), and must remain valid for the lifetime of the process.
+ */
+RftError rft_dart_init(void *post_cobject_fn);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Register a collection observer that delivers each mutation event to
+ * the Dart `SendPort` `port` as a JSON string (same payload as
+ * [`rft_observe`](super::rft_observe)).
+ *
+ * Requires a prior successful [`rft_dart_init`]; otherwise returns
+ * [`RftError::DartApiNotInitialized`]. Cancel with
+ * [`rft_unobserve`](super::rft_unobserve); closing the Dart
+ * `ReceivePort` alone stops delivery but leaks the background task
+ * until `rft_unobserve` or `rft_close`.
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle.
+ * - `collection` must be a valid null-terminated UTF-8 C string.
+ * - `port` must be a native port id obtained from a Dart `ReceivePort`.
+ * - `out_sub_id` must be a valid `*mut u64`.
+ */
+RftError rft_observe_dart_port(struct RaftDb *db,
+                               const char *collection,
+                               int64_t port,
+                               uint64_t *out_sub_id);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Register a live-query observer that delivers each
+ * [`QueryDiff`](crate::reactive::QueryDiff) to the Dart `SendPort`
+ * `port` as a JSON string (same payload and initial-snapshot semantics
+ * as [`rft_observe_query`](super::rft_observe_query)).
+ *
+ * Requires a prior successful [`rft_dart_init`]; otherwise returns
+ * [`RftError::DartApiNotInitialized`].
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle.
+ * - `query_json` must be a valid UTF-8 buffer of `query_json_len` bytes.
+ * - `port` must be a native port id obtained from a Dart `ReceivePort`.
+ * - `out_sub_id` must be a valid `*mut u64`.
+ */
+RftError rft_observe_query_dart_port(struct RaftDb *db,
+                                     const uint8_t *query_json,
+                                     uintptr_t query_json_len,
+                                     int64_t port,
+                                     uint64_t *out_sub_id);
 #endif
 
 #if defined(RAFT_DB_FFI)
@@ -416,7 +485,6 @@ RftError rft_collection_list_ids(struct RaftDb *db,
  *   for managing its lifetime so it remains valid for the subscription.
  * - `out_sub_id` must be a valid `*mut u64`.
  */
-rft_
 RftError rft_observe(struct RaftDb *db,
                      const char *collection,
                      RftObserveCallback callback,
@@ -451,7 +519,6 @@ RftError rft_observe(struct RaftDb *db,
  *   lifetime and must keep it valid for the subscription.
  * - `out_sub_id` must be a valid `*mut u64`.
  */
-rft_
 RftError rft_observe_query(struct RaftDb *db,
                            const uint8_t *query_json,
                            uintptr_t query_json_len,
@@ -471,7 +538,7 @@ RftError rft_observe_query(struct RaftDb *db,
  *
  * - `db` must be a valid handle.
  */
-rft_ RftError rft_unobserve(struct RaftDb *db, uint64_t sub_id);
+RftError rft_unobserve(struct RaftDb *db, uint64_t sub_id);
 #endif
 
 #if defined(RAFT_DB_FFI)
@@ -485,7 +552,6 @@ rft_ RftError rft_unobserve(struct RaftDb *db, uint64_t sub_id);
  * - `query_json` must be a valid UTF-8 buffer of `query_json_len` bytes.
  * - `out_result` must be a valid `*mut *mut RaftQueryResult`.
  */
-rft_
 RftError rft_query_execute(struct RaftDb *db,
                            const uint8_t *query_json,
                            uintptr_t query_json_len,
@@ -501,7 +567,7 @@ RftError rft_query_execute(struct RaftDb *db,
  *
  * - `result` must be a handle returned by [`rft_query_execute`], or null.
  */
-rft_ uintptr_t rft_query_result_count(const struct RaftQueryResult *result);
+uintptr_t rft_query_result_count(const struct RaftQueryResult *result);
 #endif
 
 #if defined(RAFT_DB_FFI)
@@ -516,7 +582,6 @@ rft_ uintptr_t rft_query_result_count(const struct RaftQueryResult *result);
  *   the required size.
  * - `out_len` must be a valid `*mut usize`.
  */
-rft_
 RftError rft_query_result_get(const struct RaftQueryResult *result,
                               uintptr_t index,
                               uint8_t *out_buf,
@@ -533,7 +598,7 @@ RftError rft_query_result_get(const struct RaftQueryResult *result,
  * - `result` must be a handle returned by [`rft_query_execute`], or null.
  * - After this call, `result` is dangling and must not be reused.
  */
-rft_ void rft_query_result_free(struct RaftQueryResult *result);
+void rft_query_result_free(struct RaftQueryResult *result);
 #endif
 
 #if defined(RAFT_DB_FFI)
@@ -546,7 +611,7 @@ rft_ void rft_query_result_free(struct RaftQueryResult *result);
  * - `db` must be a valid handle.
  * - `out_txn` must be a valid `*mut *mut RaftTransaction`.
  */
-rft_ RftError rft_transaction_begin(struct RaftDb *db, struct RaftTransaction **out_txn);
+RftError rft_transaction_begin(struct RaftDb *db, struct RaftTransaction **out_txn);
 #endif
 
 #if defined(RAFT_DB_FFI)
@@ -566,7 +631,6 @@ rft_ RftError rft_transaction_begin(struct RaftDb *db, struct RaftTransaction **
  *   [`rft_transaction_begin`] and not yet committed/rolled back.
  * - Other arguments follow the standard FFI contract.
  */
-rft_
 RftError rft_transaction_get(struct RaftTransaction *txn,
                              const char *collection,
                              uint64_t doc_id,
@@ -584,7 +648,6 @@ RftError rft_transaction_get(struct RaftTransaction *txn,
  *   [`rft_transaction_begin`] and not yet finalised.
  * - `doc_json` must be a valid UTF-8 buffer of `doc_json_len` bytes.
  */
-rft_
 RftError rft_transaction_put(struct RaftTransaction *txn,
                              const char *collection,
                              const uint8_t *doc_json,
@@ -600,7 +663,6 @@ RftError rft_transaction_put(struct RaftTransaction *txn,
  * - `txn` must be a valid, active handle.
  * - `collection` must be a valid null-terminated UTF-8 C string.
  */
-rft_
 RftError rft_transaction_delete(struct RaftTransaction *txn,
                                 const char *collection,
                                 uint64_t doc_id);
@@ -622,7 +684,7 @@ RftError rft_transaction_delete(struct RaftTransaction *txn,
  * - `txn` must be a valid, active handle. After this call, `txn` is
  *   freed and dangling.
  */
-rft_ RftError rft_transaction_commit(struct RaftTransaction *txn);
+RftError rft_transaction_commit(struct RaftTransaction *txn);
 #endif
 
 #if defined(RAFT_DB_FFI)
@@ -636,7 +698,7 @@ rft_ RftError rft_transaction_commit(struct RaftTransaction *txn);
  *   [`rft_transaction_begin`], or null (no-op).
  * - After this call, `txn` is freed and dangling.
  */
-rft_ void rft_transaction_rollback(struct RaftTransaction *txn);
+void rft_transaction_rollback(struct RaftTransaction *txn);
 #endif
 
 #ifdef __cplusplus

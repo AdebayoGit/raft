@@ -39,4 +39,8 @@ pub enum RftError {
     /// components, or escapes the confinement root passed to
     /// [`rft_open_at`](super::rft_open_at) (including via symlinks).
     InvalidPath = 11,
+    /// A `rft_observe_*_dart_port` function was called before
+    /// [`rft_dart_init`](super::rft_dart_init) registered the Dart VM's
+    /// `Dart_PostCObject_DL` function.
+    DartApiNotInitialized = 12,
 }

@@ -25,7 +25,6 @@ rename_variants = "ScreamingSnakeCase"
 prefix_with_name = true
 
 [fn]
-prefix = "rft_"
 rename_args = "None"
 
 [export]

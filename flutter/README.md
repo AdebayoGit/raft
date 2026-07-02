@@ -244,9 +244,7 @@ Two observers are wired through the typed-FFI surface:
 - **Per-collection observer** — fires on every insert/update/delete in a collection
 - **Live query observer** — fires immediately with the initial snapshot, then again on every result-set change
 
-> **Note (Dart):** observe wiring is currently deferred on Dart. The Rust core emits events with a stack-local `CString` that's freed when the synchronous callback returns. Swift/Kotlin process events synchronously on the Rust tokio thread; Dart's only safe cross-thread option (`NativeCallable.listener`) dispatches asynchronously, so the pointer is dangling by the time Dart reads it. Wiring through a `Dart_PostCObject_DL`-based adapter is tracked separately. For now, model change notifications via your own pub/sub layer.
-
-When the Dart adapter ships, the API will be:
+On Dart, events are delivered via `Dart_PostCObject_DL`: the binding registers the VM's post function once (`rft_dart_init`), and the Rust core posts each event JSON to a `ReceivePort` — the VM copies the payload into the port queue during the post call, so there is no dangling-pointer hazard (unlike `NativeCallable.listener`, which dispatches after the native `CString` is freed). Subscriptions register on first listen and unsubscribe on cancel.
 
 ```dart
 final sub = db.observeCollection('users').listen((event) {
@@ -286,6 +284,9 @@ All native failures throw `RaftDbException` with an integer `code` field:
 | 7 | TransactionConflict — a tracked document was modified concurrently |
 | 8 | InvalidHandle — a freed transaction/result/subscription was reused |
 | 9 | UnknownSubscription — `unobserve` called with an unknown id |
+| 10 | InternalPanic — native core panicked; close and reopen the database |
+| 11 | InvalidPath — open path empty, contains `..`, or escapes the confinement root |
+| 12 | DartApiNotInitialized — observer used before `rft_dart_init` (handled internally) |
 
 ```dart
 try {

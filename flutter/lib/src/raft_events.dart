@@ -2,17 +2,10 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 /// What kind of mutation occurred.
-enum MutationKind {
-  insert,
-  update,
-  delete,
-}
+enum MutationKind { insert, update, delete }
 
 /// Whether the mutation originated locally or arrived from a network peer.
-enum MutationOrigin {
-  local,
-  remote,
-}
+enum MutationOrigin { local, remote }
 
 /// A mutation notification emitted by [RaftDb.observeCollection].
 ///
@@ -54,7 +47,9 @@ class MutationEvent {
       default:
         throw FormatException('Unknown mutation_type: ${j['mutation_type']}');
     }
-    final origin = (j['origin'] == 'Remote') ? MutationOrigin.remote : MutationOrigin.local;
+    final origin = (j['origin'] == 'Remote')
+        ? MutationOrigin.remote
+        : MutationOrigin.local;
     return MutationEvent(
       collection: j['collection'] as String,
       docId: (j['doc_id'] as num).toInt(),

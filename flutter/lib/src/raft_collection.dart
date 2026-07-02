@@ -41,10 +41,10 @@ class RaftCollection<T> {
     required this.name,
     required Uint8List Function(T document) serialize,
     required T Function(Uint8List bytes) deserialize,
-  })  : _db = db,
-        _serialize = serialize,
-        _deserialize = deserialize,
-        _prefix = Uint8List.fromList(utf8.encode('$name:'));
+  }) : _db = db,
+       _serialize = serialize,
+       _deserialize = deserialize,
+       _prefix = Uint8List.fromList(utf8.encode('$name:'));
 
   /// The underlying database handle.
   final RaftDb _db;
