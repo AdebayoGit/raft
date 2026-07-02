@@ -143,6 +143,9 @@ fn decode_payload(payload: &[u8]) -> Option<WalOp> {
     }
 }
 
+/// A live key-value pair returned by scans (tombstones excluded).
+pub type ScanEntry = (Vec<u8>, Vec<u8>);
+
 /// The main storage engine. Coordinates all subsystems.
 pub struct StorageEngine {
     db_dir: PathBuf,
@@ -281,6 +284,52 @@ impl StorageEngine {
         }
 
         Ok(None)
+    }
+
+    /// Scan all live key-value pairs whose key starts with `prefix`,
+    /// returned in ascending key order. Tombstoned keys are excluded.
+    ///
+    /// Merge order: SSTables oldest → newest (higher level first, then
+    /// ascending id within a level), memtable last — so the newest write
+    /// for each key wins, matching the `get` read path.
+    ///
+    /// An empty `prefix` scans the entire keyspace.
+    pub fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<ScanEntry>, StorageError> {
+        let mut merged: std::collections::BTreeMap<Vec<u8>, Option<Vec<u8>>> =
+            std::collections::BTreeMap::new();
+
+        // SSTables oldest first: level descending, id ascending.
+        let version = self.manifest.current_version();
+        let mut tables: Vec<&SSTableMeta> = version.tables.values().collect();
+        tables.sort_by(|a, b| b.level.cmp(&a.level).then_with(|| a.id.cmp(&b.id)));
+
+        for meta in tables {
+            // Skip tables whose key range cannot contain the prefix.
+            if !meta.largest_key.starts_with(prefix) && meta.largest_key.as_slice() < prefix {
+                continue;
+            }
+            let reader = match self.reader_for(meta.id, meta.level)? {
+                Some(r) => r,
+                None => continue, // file missing — raced with compaction
+            };
+            for (k, v) in reader.scan_all()? {
+                if k.starts_with(prefix) {
+                    merged.insert(k, v);
+                }
+            }
+        }
+
+        // Memtable on top — newest state, including tombstones.
+        for (k, v) in self.memtable.iter() {
+            if k.starts_with(prefix) {
+                merged.insert(k.to_vec(), v.map(|v| v.to_vec()));
+            }
+        }
+
+        Ok(merged
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|v| (k, v)))
+            .collect())
     }
 
     /// Return a cached `SSTableReader` for the given table, opening and

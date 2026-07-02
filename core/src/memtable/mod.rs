@@ -93,6 +93,14 @@ impl MemTable {
     pub fn size_bytes(&self) -> usize {
         self.size_bytes
     }
+
+    /// Iterate over all entries in sorted key order without consuming the
+    /// memtable. Values are `Option<&[u8]>` — `None` means tombstone.
+    pub fn iter(&self) -> impl Iterator<Item = (&[u8], Option<&[u8]>)> {
+        self.entries
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_deref()))
+    }
 }
 
 impl IntoIterator for MemTable {

@@ -329,23 +329,46 @@ impl Database {
         id
     }
 
-    /// Walk every key in the engine on open and rebuild the per-collection
-    /// in-memory state.
+    /// Walk every document key in the engine on open and rebuild the
+    /// per-collection in-memory state.
     ///
-    /// The current LSM engine doesn't expose an iterator, so we look up
-    /// the persisted id-counter and document keys via point reads. To keep
-    /// the implementation simple we don't keep an external collection
-    /// catalog — instead each `put` records the auto-id via the storage
-    /// engine when appropriate.
+    /// Scans the `__doc__/` prefix, parses each key as
+    /// `__doc__/{collection}/{doc_id_be}`, and deserializes the stored
+    /// document. Keys that don't match the layout are skipped (they
+    /// belong to raw KV users); undecodable documents are an error —
+    /// silently dropping user data on open is worse than failing.
     fn scan_collections(
-        _engine: &StorageEngine,
+        engine: &StorageEngine,
     ) -> Result<HashMap<String, CollectionState>, DatabaseError> {
-        // For v0.1.0 we keep collections in-memory only; the engine still
-        // provides durability per document, but the on-open re-hydration
-        // pass is deferred until the engine grows a public iterator.
-        // Tests below cover the put/get/delete/query flow within a single
-        // process, which is the FFI's primary use case.
-        Ok(HashMap::new())
+        let mut collections: HashMap<String, CollectionState> = HashMap::new();
+
+        for (key, value) in engine.scan_prefix(DOC_PREFIX)? {
+            let rest = &key[DOC_PREFIX.len()..];
+            // Layout: {collection}/{8-byte BE id} — need at least '/' + 8.
+            if rest.len() < 9 || rest[rest.len() - 9] != b'/' {
+                continue;
+            }
+            let Ok(collection) = std::str::from_utf8(&rest[..rest.len() - 9]) else {
+                continue;
+            };
+            let id_bytes: [u8; 8] = rest[rest.len() - 8..]
+                .try_into()
+                .expect("slice is exactly 8 bytes");
+            let id = DocId(u64::from_be_bytes(id_bytes));
+
+            let doc = deserialize_doc(&value)?;
+            let state = collections.entry(collection.to_string()).or_default();
+            state.docs.insert(id, doc);
+            state.versions.insert(id, 1);
+            state.next_doc_id = state.next_doc_id.max(id.0 + 1);
+        }
+
+        // All rehydrated docs get version 1; new writes start at 2.
+        for state in collections.values_mut() {
+            state.next_version = 2;
+        }
+
+        Ok(collections)
     }
 }
 
@@ -672,7 +695,6 @@ fn serialize_doc(doc: &Document) -> Result<Vec<u8>, DatabaseError> {
     serde_json::to_vec(doc).map_err(|e| DatabaseError::Decode(e.to_string()))
 }
 
-#[allow(dead_code)] // Used by future on-open rehydration.
 fn deserialize_doc(bytes: &[u8]) -> Result<Document, DatabaseError> {
     serde_json::from_slice(bytes).map_err(|e| DatabaseError::Decode(e.to_string()))
 }
@@ -883,6 +905,78 @@ mod tests {
             db.get("users", DocId(1)).unwrap().get("name"),
             Some(&Value::String("Revived".into()))
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reopen_rehydrates_documents() {
+        let dir = temp_dir("reopen_rehydrate");
+        {
+            let db = Database::open(&dir).unwrap();
+            db.put("users", user(1, "Alice", 30)).unwrap();
+            db.put("users", user(2, "Bob", 25)).unwrap();
+            db.put("posts", user(7, "Hello", 0)).unwrap();
+            db.delete("users", DocId(2)).unwrap();
+        }
+
+        let db = Database::open(&dir).unwrap();
+        assert_eq!(db.count("users"), 1);
+        assert_eq!(db.count("posts"), 1);
+        assert_eq!(
+            db.get("users", DocId(1)).unwrap().get("name"),
+            Some(&Value::String("Alice".into()))
+        );
+        assert!(db.get("users", DocId(2)).is_none());
+
+        // Queries work over rehydrated state.
+        let q = Query::collection("users").filter(Filter::gte("age", Value::Int(0)));
+        assert_eq!(db.query(&q).len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reopen_continues_auto_ids_past_existing() {
+        let dir = temp_dir("reopen_auto_id");
+        let existing_max;
+        {
+            let db = Database::open(&dir).unwrap();
+            db.put_auto("users", Document::new(DocId(0))).unwrap();
+            existing_max = db.put_auto("users", Document::new(DocId(0))).unwrap();
+        }
+
+        let db = Database::open(&dir).unwrap();
+        let next = db.put_auto("users", Document::new(DocId(0))).unwrap();
+        assert!(
+            next.0 > existing_max.0,
+            "auto-id must not reuse {existing_max:?}"
+        );
+        assert_eq!(db.count("users"), 3);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reopen_survives_writes_after_flush() {
+        let dir = temp_dir("reopen_after_flush");
+        let config = StorageConfig {
+            memtable_size: 256, // force flushes to SSTables
+            ..StorageConfig::default()
+        };
+        {
+            let db = Database::open_with_config(&dir, config.clone()).unwrap();
+            for i in 1..=20u64 {
+                db.put("users", user(i, &format!("U{i}"), i as i64))
+                    .unwrap();
+            }
+        }
+
+        let db = Database::open_with_config(&dir, config).unwrap();
+        assert_eq!(db.count("users"), 20);
+        for i in 1..=20u64 {
+            assert!(db.get("users", DocId(i)).is_some(), "doc {i} missing");
+        }
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
