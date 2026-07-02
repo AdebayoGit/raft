@@ -1,14 +1,22 @@
 //! Query executor — runs a [`QueryPlan`] against a [`DocumentStore`].
 //!
 //! Execution flow:
-//! 1. Fetch candidate documents (via index or full scan).
+//! 1. Fetch candidate documents lazily (via index or full scan).
 //! 2. Apply remaining filter predicates in memory.
-//! 3. Sort results.
-//! 4. Apply offset and limit.
+//! 3. Apply sort / offset / limit:
+//!    - unsorted + limit: stream and stop as soon as `offset + limit`
+//!      matches have been seen — documents past the cut are never fetched;
+//!    - sorted + limit: bounded top-k selection keeps only the best
+//!      `offset + limit` candidates in memory instead of sorting the full
+//!      result set;
+//!    - sorted, no limit: full stable sort.
+
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 
 use crate::index::{BTreeIndex, DocId, HashIndex, Index};
 
-use super::document::{Document, DocumentStore};
+use super::document::{Document, DocumentStore, Value};
 use super::planner::{QueryPlan, ScanStrategy};
 use super::sort::SortDirection;
 use super::Query;
@@ -58,53 +66,64 @@ impl QueryExecutor {
             }
         };
 
-        // Step 2: Fetch documents and apply filter.
-        let mut results: Vec<Document> = candidate_ids
+        // Step 2: Lazily fetch documents and apply the filter. Nothing is
+        // materialised until one of the terminal branches below consumes
+        // the iterator.
+        let matches = candidate_ids
             .into_iter()
             .filter_map(|id| store.get_document(id))
             .filter(|doc| match query.get_filter() {
                 Some(filter) => filter.matches(&|field_name: &str| doc.get(field_name).cloned()),
                 None => true,
-            })
-            .collect();
-
-        // Step 3: Sort.
-        if let Some(sort) = query.get_sort() {
-            let field_name = sort.field.clone();
-            let desc = sort.direction == SortDirection::Descending;
-            results.sort_by(|a, b| {
-                let va = a.get(&field_name);
-                let vb = b.get(&field_name);
-                let ord = match (va, vb) {
-                    (Some(a_val), Some(b_val)) => a_val
-                        .partial_cmp(b_val)
-                        .unwrap_or(std::cmp::Ordering::Equal),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => std::cmp::Ordering::Equal,
-                };
-                if desc {
-                    ord.reverse()
-                } else {
-                    ord
-                }
             });
-        }
 
-        // Step 4: Offset.
-        if let Some(offset) = query.get_offset() {
-            if offset >= results.len() {
-                return Vec::new();
+        let offset = query.get_offset().unwrap_or(0);
+
+        match (query.get_sort(), query.get_limit()) {
+            // Unsorted: stream in candidate order with early exit — the
+            // iterator stops fetching documents once `offset + limit`
+            // matches have been produced.
+            (None, Some(limit)) => matches.skip(offset).take(limit).collect(),
+            (None, None) => matches.skip(offset).collect(),
+
+            // Sorted + limited: bounded top-k selection. Only the best
+            // `offset + limit` candidates are retained, so memory stays
+            // O(k) instead of O(result set).
+            (Some(sort), Some(limit)) => {
+                let keep = offset.saturating_add(limit);
+                if keep == 0 {
+                    return Vec::new();
+                }
+                let desc = sort.direction == SortDirection::Descending;
+                let mut heap: BinaryHeap<Candidate> = BinaryHeap::with_capacity(keep + 1);
+                for doc in matches {
+                    heap.push(Candidate {
+                        key: doc.get(&sort.field).cloned(),
+                        desc,
+                        doc,
+                    });
+                    if heap.len() > keep {
+                        heap.pop(); // discard the current worst
+                    }
+                }
+                heap.into_sorted_vec()
+                    .into_iter()
+                    .skip(offset)
+                    .map(|c| c.doc)
+                    .collect()
             }
-            results = results.into_iter().skip(offset).collect();
-        }
 
-        // Step 5: Limit.
-        if let Some(limit) = query.get_limit() {
-            results.truncate(limit);
+            // Sorted, unlimited: full stable sort.
+            (Some(sort), None) => {
+                let mut results: Vec<Document> = matches.collect();
+                let desc = sort.direction == SortDirection::Descending;
+                results.sort_by(|a, b| directed_cmp(a.get(&sort.field), b.get(&sort.field), desc));
+                if offset > 0 {
+                    results.drain(..offset.min(results.len()));
+                }
+                results
+            }
         }
-
-        results
     }
 
     fn btree_range_lookup(
@@ -128,6 +147,63 @@ impl QueryExecutor {
         };
 
         idx.range((lo, hi))
+    }
+}
+
+/// Compare two optional field values with the query's sort semantics:
+/// missing fields sort last, incomparable values compare equal, and
+/// `desc` reverses the value ordering (but not the missing-field rule's
+/// relative outcome — reversal applies to the whole comparison, exactly
+/// as the pre-existing sort did).
+fn directed_cmp(a: Option<&Value>, b: Option<&Value>, desc: bool) -> Ordering {
+    let ord = match (a, b) {
+        (Some(a), Some(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    };
+    if desc {
+        ord.reverse()
+    } else {
+        ord
+    }
+}
+
+/// Heap entry for bounded top-k selection.
+///
+/// Orders by the (direction-applied) sort key, breaking ties by ascending
+/// [`DocId`] — the same tie order a stable sort produces, since candidate
+/// ids arrive sorted ascending.
+struct Candidate {
+    key: Option<Value>,
+    desc: bool,
+    doc: Document,
+}
+
+impl Candidate {
+    fn total_cmp(&self, other: &Self) -> Ordering {
+        directed_cmp(self.key.as_ref(), other.key.as_ref(), self.desc)
+            .then(self.doc.id.cmp(&other.doc.id))
+    }
+}
+
+impl PartialEq for Candidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.total_cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for Candidate {}
+
+impl PartialOrd for Candidate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Candidate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.total_cmp(other)
     }
 }
 
@@ -518,6 +594,123 @@ mod tests {
             if let Some(Value::Int(age)) = doc.get("age") {
                 assert!(*age > 29);
             }
+        }
+    }
+
+    // ── Streaming / bounded execution (2A.2) ──
+
+    /// Wraps a store and counts how many documents were actually fetched.
+    struct CountingStore {
+        inner: MemDocStore,
+        fetches: std::cell::Cell<usize>,
+    }
+
+    impl DocumentStore for CountingStore {
+        fn get_document(&self, id: DocId) -> Option<Document> {
+            self.fetches.set(self.fetches.get() + 1);
+            self.inner.get_document(id)
+        }
+
+        fn all_doc_ids(&self) -> Vec<DocId> {
+            self.inner.all_doc_ids()
+        }
+    }
+
+    #[test]
+    fn unsorted_limit_stops_fetching_early() {
+        let mut inner = MemDocStore::new();
+        for i in 1..=100u64 {
+            inner.insert(make_user(i, &format!("U{i}"), i as i64, true));
+        }
+        let store = CountingStore {
+            inner,
+            fetches: std::cell::Cell::new(0),
+        };
+
+        let q = Query::collection("users").offset(1).limit(2);
+        let plan = QueryPlanner::plan(&q, &[], store.count());
+        let (hash, btree) = empty_indexes();
+        let idx_set = IndexSet {
+            hash: &hash,
+            btree: &btree,
+        };
+
+        let results = QueryExecutor::execute(&q, &plan, &store, &idx_set);
+        assert_eq!(results.len(), 2);
+        // offset 1 + limit 2 → exactly 3 documents fetched, not 100.
+        assert_eq!(store.fetches.get(), 3);
+    }
+
+    #[test]
+    fn topk_matches_full_sort_including_ties() {
+        let mut store = MemDocStore::new();
+        // Duplicate ages force tie-breaking: stable sort keeps id order.
+        store.insert(make_user(1, "A", 30, true));
+        store.insert(make_user(2, "B", 25, true));
+        store.insert(make_user(3, "C", 30, true));
+        store.insert(make_user(4, "D", 25, true));
+        store.insert(make_user(5, "E", 40, true));
+
+        let (hash, btree) = empty_indexes();
+        let idx_set = IndexSet {
+            hash: &hash,
+            btree: &btree,
+        };
+
+        for desc in [false, true] {
+            let sort = if desc {
+                Sort::desc("age")
+            } else {
+                Sort::asc("age")
+            };
+            let full = Query::collection("users").sort(sort.clone());
+            let full_plan = QueryPlanner::plan(&full, &[], store.count());
+            let expected: Vec<DocId> = QueryExecutor::execute(&full, &full_plan, &store, &idx_set)
+                .into_iter()
+                .map(|d| d.id)
+                .take(3)
+                .collect();
+
+            let limited = Query::collection("users").sort(sort).limit(3);
+            let plan = QueryPlanner::plan(&limited, &[], store.count());
+            let got: Vec<DocId> = QueryExecutor::execute(&limited, &plan, &store, &idx_set)
+                .into_iter()
+                .map(|d| d.id)
+                .collect();
+            assert_eq!(got, expected, "top-k must match full sort (desc={desc})");
+        }
+    }
+
+    #[test]
+    fn sorted_limit_with_offset_beyond_results_is_empty() {
+        let store = sample_store();
+        let q = Query::collection("users")
+            .sort(Sort::asc("age"))
+            .offset(100)
+            .limit(5);
+        let plan = QueryPlanner::plan(&q, &[], store.count());
+        let (hash, btree) = empty_indexes();
+        let idx_set = IndexSet {
+            hash: &hash,
+            btree: &btree,
+        };
+        assert!(QueryExecutor::execute(&q, &plan, &store, &idx_set).is_empty());
+    }
+
+    #[test]
+    fn zero_limit_returns_empty() {
+        let store = sample_store();
+        for q in [
+            Query::collection("users").limit(0),
+            Query::collection("users").sort(Sort::asc("age")).limit(0),
+        ] {
+            let plan = QueryPlanner::plan(&q, &[], store.count());
+            let (hash, btree) = empty_indexes();
+            let idx_set = IndexSet {
+                hash: &hash,
+                btree: &btree,
+            };
+            assert!(QueryExecutor::execute(&q, &plan, &store, &idx_set).is_empty());
         }
     }
 
