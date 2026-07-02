@@ -11,6 +11,10 @@ use super::{DEFAULT_BLOCK_SIZE, SSTABLE_MAGIC};
 /// many entries the table contains.
 const BLOOM_FP_RATE: f64 = 0.01;
 
+/// One restart point is recorded every this many entries. Point lookups
+/// binary-search the restart array, then scan at most this many entries.
+pub(crate) const RESTART_INTERVAL: usize = 16;
+
 /// Builds an immutable SSTable file from a sorted iterator of key-value pairs.
 pub struct SSTableWriter {
     path: PathBuf,
@@ -24,10 +28,21 @@ pub struct SSTableWriter {
 /// ```
 ///
 /// `value_flag` 0 = tombstone, 1 = live value.
+///
+/// Each block ends with a restart trailer enabling binary search:
+///
+/// ```text
+/// [restart_offset: u32] × num_restarts  [num_restarts: u32]
+/// ```
+///
+/// A restart offset is the byte position (within the block) of the entry
+/// recorded every [`RESTART_INTERVAL`] entries; offset 0 is always present.
 struct BlockBuilder {
     data: Vec<u8>,
     first_key: Option<Vec<u8>>,
     count: usize,
+    /// Byte offsets of restart-point entries within `data`.
+    restarts: Vec<u32>,
 }
 
 /// A finished block ready to be written, along with its first key.
@@ -49,6 +64,7 @@ impl BlockBuilder {
             data: Vec::new(),
             first_key: None,
             count: 0,
+            restarts: Vec::new(),
         }
     }
 
@@ -63,6 +79,10 @@ impl BlockBuilder {
     fn add(&mut self, key: &[u8], value: &Option<Vec<u8>>) {
         if self.first_key.is_none() {
             self.first_key = Some(key.to_vec());
+        }
+
+        if self.count % RESTART_INTERVAL == 0 {
+            self.restarts.push(self.data.len() as u32);
         }
 
         // key_len
@@ -87,10 +107,15 @@ impl BlockBuilder {
     }
 
     fn finish(self) -> Option<FinishedBlock> {
-        self.first_key.map(|first_key| FinishedBlock {
-            data: self.data,
-            first_key,
-        })
+        let first_key = self.first_key?;
+        // Append the restart trailer: offsets then the count.
+        let mut data = self.data;
+        data.reserve(4 * (self.restarts.len() + 1));
+        for r in &self.restarts {
+            data.extend_from_slice(&r.to_be_bytes());
+        }
+        data.extend_from_slice(&(self.restarts.len() as u32).to_be_bytes());
+        Some(FinishedBlock { data, first_key })
     }
 }
 

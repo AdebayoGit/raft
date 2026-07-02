@@ -241,17 +241,92 @@ impl SSTableReader {
         Ok(block)
     }
 
+    /// Split a data block into its entries region and restart offsets.
+    ///
+    /// Block trailer layout (written by the SSTable writer):
+    /// `[restart_offset: u32] × num_restarts  [num_restarts: u32]`
+    fn split_block(block: &[u8], block_offset: u64) -> Result<(&[u8], &[u8]), SSTableError> {
+        let corrupt = |reason: &str| SSTableError::CorruptBlock {
+            offset: block_offset,
+            reason: reason.to_string(),
+        };
+        if block.len() < 4 {
+            return Err(corrupt("block too small for restart trailer"));
+        }
+        let num_restarts =
+            u32::from_be_bytes(block[block.len() - 4..].try_into().unwrap()) as usize;
+        let trailer_len = num_restarts
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(4))
+            .ok_or_else(|| corrupt("restart count overflow"))?;
+        if trailer_len > block.len() {
+            return Err(corrupt("restart trailer extends past block"));
+        }
+        let entries = &block[..block.len() - trailer_len];
+        let restarts = &block[block.len() - trailer_len..block.len() - 4];
+        Ok((entries, restarts))
+    }
+
+    /// Decode the key of the entry starting at `pos` within the entries
+    /// region. Restart offsets always point at valid entry starts.
+    fn key_at(entries: &[u8], pos: usize, block_offset: u64) -> Result<&[u8], SSTableError> {
+        let corrupt = |reason: &str| SSTableError::CorruptBlock {
+            offset: block_offset,
+            reason: reason.to_string(),
+        };
+        let rest = entries
+            .get(pos..)
+            .ok_or_else(|| corrupt("bad restart offset"))?;
+        if rest.len() < 5 {
+            return Err(corrupt("truncated entry header at restart"));
+        }
+        let key_len = u32::from_be_bytes(rest[0..4].try_into().unwrap()) as usize;
+        let header_len = match rest[4] {
+            1 => 9, // key_len + flag + value_len
+            0 => 5, // key_len + flag
+            other => return Err(corrupt(&format!("unknown value_flag: {other}"))),
+        };
+        rest.get(header_len..header_len + key_len)
+            .ok_or_else(|| corrupt("truncated key at restart"))
+    }
+
     /// Search a single data block for an exact key match.
     ///
-    /// Streams over the block bytes without materialising a `Vec` of
-    /// owned key/value pairs. Only the matching value is allocated; all
-    /// other entries are skipped in place.
+    /// Binary-searches the block's restart points to find the last restart
+    /// whose key is `<= key`, then scans forward at most one restart
+    /// interval. Only the matching value is allocated; all other entries
+    /// are skipped in place.
     fn search_block(
         block: &[u8],
         block_offset: u64,
         key: &[u8],
     ) -> Result<Option<Option<Vec<u8>>>, SSTableError> {
-        let mut cursor = block;
+        let (entries, restarts) = Self::split_block(block, block_offset)?;
+        let num_restarts = restarts.len() / 4;
+        let restart_at = |i: usize| -> usize {
+            u32::from_be_bytes(restarts[i * 4..i * 4 + 4].try_into().unwrap()) as usize
+        };
+
+        // Binary search: greatest restart whose key <= target.
+        let mut lo = 0usize; // candidate restart index
+        let mut hi = num_restarts;
+        // Invariant: restart keys before `lo` are <= key; those at/after `hi` are > key.
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let mid_key = Self::key_at(entries, restart_at(mid), block_offset)?;
+            if mid_key <= key {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if lo == 0 {
+            // Every restart key (including the block's first key) is > target.
+            return Ok(None);
+        }
+        let start = restart_at(lo - 1);
+
+        let mut cursor = &entries[start..];
         while cursor.len() >= 5 {
             let key_len = u32::from_be_bytes(cursor[0..4].try_into().unwrap()) as usize;
             let value_flag = cursor[4];
@@ -314,7 +389,8 @@ impl SSTableReader {
 
     /// Decode all key-value pairs from a data block.
     fn decode_block(block: &[u8], block_offset: u64) -> Result<Vec<KvPair>, SSTableError> {
-        let mut cursor = block;
+        let (entry_bytes, _restarts) = Self::split_block(block, block_offset)?;
+        let mut cursor = entry_bytes;
         let mut entries = Vec::new();
 
         while cursor.len() >= 5 {
@@ -715,6 +791,73 @@ mod tests {
 
         let collected: Vec<_> = reader.iter().collect::<Result<Vec<_>, _>>().unwrap();
         assert_eq!(collected, entries);
+    }
+
+    #[test]
+    fn get_binary_searches_restart_points_within_large_blocks() {
+        // Large block size → hundreds of entries per block → many restart
+        // points. Every present key must be found and absent keys (that
+        // sort between present ones) rejected, across restart boundaries.
+        let path = temp_path("restart_points");
+        let _ = fs::remove_file(&path);
+
+        let entries: Vec<(Vec<u8>, Option<Vec<u8>>)> = (0..1000)
+            .map(|i| {
+                let v = if i % 7 == 0 {
+                    None // sprinkle tombstones across restart intervals
+                } else {
+                    Some(format!("val-{i:06}").into_bytes())
+                };
+                (format!("key-{:06}", i * 2).into_bytes(), v)
+            })
+            .collect();
+
+        let w = SSTableWriter::new(&path).with_block_size(16 * 1024);
+        w.write(entries.iter().cloned()).unwrap();
+
+        let reader = SSTableReader::open(&path).unwrap();
+        for (k, v) in &entries {
+            assert_eq!(
+                reader.get(k).unwrap(),
+                Some(v.clone()),
+                "key {:?}",
+                String::from_utf8_lossy(k)
+            );
+        }
+        // Odd keys sort between present even keys — all absent.
+        for i in 0..1000 {
+            let absent = format!("key-{:06}", i * 2 + 1);
+            assert_eq!(reader.get(absent.as_bytes()).unwrap(), None, "{absent}");
+        }
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn corrupt_restart_trailer_is_rejected() {
+        let path = temp_path("corrupt_trailer");
+        let _ = fs::remove_file(&path);
+
+        let entries = sample_entries(64);
+        let w = SSTableWriter::new(&path).with_block_size(16 * 1024);
+        w.write(entries.iter().cloned()).unwrap();
+
+        // Locate the single data block (offset 0) and stomp its trailer's
+        // restart count with a huge value.
+        let reader = SSTableReader::open(&path).unwrap();
+        let block_len = reader.index[0].length as usize;
+        drop(reader);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[block_len - 4..block_len].copy_from_slice(&u32::MAX.to_be_bytes());
+        fs::write(&path, &bytes).unwrap();
+
+        let reader = SSTableReader::open(&path).unwrap();
+        assert!(matches!(
+            reader.get(entries[0].0.as_slice()),
+            Err(SSTableError::CorruptBlock { .. })
+        ));
+
+        fs::remove_file(&path).ok();
     }
 
     #[test]
