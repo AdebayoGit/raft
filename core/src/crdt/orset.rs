@@ -53,12 +53,20 @@ impl<T: Eq + std::hash::Hash> OrSet<T> {
     }
 
     /// Adds an element, returning the generated tag.
+    ///
+    /// If the tag is already tombstoned (this exact `(device, timestamp)`
+    /// add was previously observed and removed), the add is a no-op:
+    /// re-inserting a dead tag would create a non-canonical state that
+    /// `merge` prunes, breaking merge idempotence. Re-adding a removed
+    /// element requires a fresh tag (a new timestamp).
     pub fn add(&mut self, element: T, device_id: u128, timestamp: HlcTimestamp) -> Tag {
         let tag = Tag {
             device_id,
             timestamp,
         };
-        self.entries.entry(element).or_default().insert(tag);
+        if !self.tombstones.contains(&tag) {
+            self.entries.entry(element).or_default().insert(tag);
+        }
         tag
     }
 
@@ -310,6 +318,28 @@ mod tests {
         // Remove clears all tags
         set.remove(&"x");
         assert!(!set.contains(&"x"));
+    }
+
+    #[test]
+    fn readd_with_tombstoned_tag_is_a_no_op() {
+        // Found by the X3 proptest suite: add → remove → add with the
+        // identical (device, timestamp) tag used to resurrect the dead
+        // tag in `entries` while it stayed tombstoned, so self-merge
+        // pruned it and idempotence broke.
+        let mut set = OrSet::new();
+        set.add("x", DEVICE_A, ts(100, 0));
+        set.remove(&"x");
+        set.add("x", DEVICE_A, ts(100, 0)); // same tag — must not resurrect
+        assert!(!set.contains(&"x"));
+
+        // Self-merge must be a no-op on the canonical state.
+        let copy = set.clone();
+        set.merge(&copy);
+        assert_eq!(set, copy);
+
+        // A fresh tag re-adds normally.
+        set.add("x", DEVICE_A, ts(101, 0));
+        assert!(set.contains(&"x"));
     }
 
     #[test]

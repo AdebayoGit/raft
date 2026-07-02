@@ -56,6 +56,10 @@ fn set_op_strategy() -> impl Strategy<Value = SetOp> {
 }
 
 fn orset_from_ops(ops: &[SetOp]) -> OrSet<u8> {
+    // HLC guarantees every add gets a globally unique (device, timestamp)
+    // tag; the generator's small ranges collide, so skip duplicate tags to
+    // keep replay within the states reachable under that invariant.
+    let mut used_tags = std::collections::HashSet::new();
     let mut set = OrSet::new();
     for op in ops {
         match op {
@@ -64,7 +68,9 @@ fn orset_from_ops(ops: &[SetOp]) -> OrSet<u8> {
                 device,
                 at,
             } => {
-                set.add(*element, *device, *at);
+                if used_tags.insert((*device, *at)) {
+                    set.add(*element, *device, *at);
+                }
             }
             SetOp::Remove { element } => {
                 set.remove(element);
