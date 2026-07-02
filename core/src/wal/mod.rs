@@ -8,6 +8,6 @@ mod entry;
 mod error;
 mod writer;
 
-pub use entry::{HlcTimestamp, WalEntry};
+pub use entry::{HlcTimestamp, WalEntry, MAX_PAYLOAD_LEN};
 pub use error::WalError;
 pub use writer::{RecoveryStats, SyncMode, Wal};
