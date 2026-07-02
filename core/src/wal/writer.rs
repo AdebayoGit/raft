@@ -85,11 +85,68 @@ impl Wal {
     /// Replay the entire log, yielding entries in append order.
     ///
     /// Opens a fresh read handle so it can be called while the writer is live.
+    ///
+    /// Strict: iteration stops at the first decode error and yields it.
+    /// For crash recovery use [`Wal::recover`], which treats a torn tail
+    /// as expected and truncates it.
     pub fn replay(&self) -> Result<WalIterator, WalError> {
         let mut file = File::open(&self.path)?;
         let mut data = Vec::new();
         file.read_to_end(&mut data)?;
         Ok(WalIterator { data, pos: 0 })
+    }
+
+    /// Recover entries after a crash.
+    ///
+    /// Decodes the log from the start and returns every entry up to the
+    /// first corruption (torn write, bad checksum, truncated record). A
+    /// damaged tail is *expected* after power loss — the file is truncated
+    /// back to the last valid entry so subsequent appends produce a clean
+    /// log, and recovery reports what happened via [`RecoveryStats`].
+    ///
+    /// Only I/O errors are fatal.
+    pub fn recover(&mut self) -> Result<(Vec<WalEntry>, RecoveryStats), WalError> {
+        let mut file = File::open(&self.path)?;
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)?;
+
+        let mut entries = Vec::new();
+        let mut pos = 0usize;
+        let mut truncated_at = None;
+
+        while pos < data.len() {
+            let mut cursor = &data[pos..];
+            match WalEntry::decode(&mut cursor, pos as u64) {
+                Ok(Some(entry)) => {
+                    entries.push(entry);
+                    pos = data.len() - cursor.len();
+                }
+                Ok(None) => break,
+                Err(WalError::Io(e)) => return Err(WalError::Io(e)),
+                Err(_) => {
+                    // Torn or corrupt tail — keep the valid prefix only.
+                    // Entries beyond the damage cannot be trusted because
+                    // framing is lost.
+                    truncated_at = Some(pos as u64);
+                    break;
+                }
+            }
+        }
+
+        if truncated_at.is_some() {
+            // Truncate the file to the valid prefix and fsync so the
+            // damaged bytes can never resurface.
+            self.writer.flush()?;
+            let truncate_handle = OpenOptions::new().write(true).open(&self.path)?;
+            truncate_handle.set_len(pos as u64)?;
+            truncate_handle.sync_all()?;
+        }
+
+        let stats = RecoveryStats {
+            entries_recovered: entries.len(),
+            truncated_at,
+        };
+        Ok((entries, stats))
     }
 
     /// Sync the underlying file to durable storage.
@@ -104,6 +161,16 @@ impl Wal {
     pub fn sync_mode(&self) -> SyncMode {
         self.sync_mode
     }
+}
+
+/// Outcome of a [`Wal::recover`] pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryStats {
+    /// Number of valid entries recovered from the log.
+    pub entries_recovered: usize,
+    /// Byte offset the log was truncated back to, if a damaged tail was
+    /// found. `None` means the log was fully intact.
+    pub truncated_at: Option<u64>,
 }
 
 /// Iterator over WAL entries read from a snapshot of the log file.
@@ -380,6 +447,112 @@ mod tests {
 
             fs::remove_file(&path).ok();
         }
+    }
+
+    #[test]
+    fn recover_intact_log_returns_all_entries() {
+        let path = temp_wal_path("recover_intact");
+        let _ = fs::remove_file(&path);
+
+        let entries_in: Vec<WalEntry> = (0..5).map(|i| make_entry(i, 0, b"data")).collect();
+        {
+            let mut wal = Wal::open(&path).unwrap();
+            for e in &entries_in {
+                wal.append(e).unwrap();
+            }
+        }
+
+        let mut wal = Wal::open(&path).unwrap();
+        let (entries, stats) = wal.recover().unwrap();
+        assert_eq!(entries, entries_in);
+        assert_eq!(stats.entries_recovered, 5);
+        assert_eq!(stats.truncated_at, None);
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn recover_truncates_torn_tail() {
+        let path = temp_wal_path("recover_torn_tail");
+        let _ = fs::remove_file(&path);
+
+        let e1 = make_entry(1, 0, b"complete-1");
+        let e2 = make_entry(2, 0, b"complete-2");
+        {
+            let mut wal = Wal::open(&path).unwrap();
+            wal.append(&e1).unwrap();
+            wal.append(&e2).unwrap();
+        }
+
+        // Simulate a torn write: append half of a third entry.
+        let e3_bytes = make_entry(3, 0, b"torn-entry").encode_to_vec();
+        let valid_len = fs::metadata(&path).unwrap().len();
+        let mut data = fs::read(&path).unwrap();
+        data.extend_from_slice(&e3_bytes[..e3_bytes.len() / 2]);
+        fs::write(&path, &data).unwrap();
+
+        let mut wal = Wal::open(&path).unwrap();
+        let (entries, stats) = wal.recover().unwrap();
+        assert_eq!(entries, vec![e1.clone(), e2.clone()]);
+        assert_eq!(stats.truncated_at, Some(valid_len));
+
+        // File must be truncated back to the valid prefix.
+        assert_eq!(fs::metadata(&path).unwrap().len(), valid_len);
+
+        // Appends after recovery produce a clean, fully-replayable log.
+        let e4 = make_entry(4, 0, b"after-recovery");
+        wal.append(&e4).unwrap();
+        let out: Vec<WalEntry> = wal
+            .replay()
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(out, vec![e1, e2, e4]);
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn recover_truncates_corrupt_tail_checksum() {
+        let path = temp_wal_path("recover_corrupt_tail");
+        let _ = fs::remove_file(&path);
+
+        let e1 = make_entry(1, 0, b"good");
+        let e2 = make_entry(2, 0, b"will-be-corrupted");
+        {
+            let mut wal = Wal::open(&path).unwrap();
+            wal.append(&e1).unwrap();
+            wal.append(&e2).unwrap();
+        }
+
+        // Corrupt a byte inside the second entry's payload.
+        let e1_len = e1.encoded_size() as u64;
+        let mut data = fs::read(&path).unwrap();
+        let idx = e1.encoded_size() + 32; // inside e2
+        data[idx] ^= 0xFF;
+        fs::write(&path, &data).unwrap();
+
+        let mut wal = Wal::open(&path).unwrap();
+        let (entries, stats) = wal.recover().unwrap();
+        assert_eq!(entries, vec![e1]);
+        assert_eq!(stats.truncated_at, Some(e1_len));
+        assert_eq!(fs::metadata(&path).unwrap().len(), e1_len);
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn recover_empty_log() {
+        let path = temp_wal_path("recover_empty");
+        let _ = fs::remove_file(&path);
+
+        let mut wal = Wal::open(&path).unwrap();
+        let (entries, stats) = wal.recover().unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(stats.entries_recovered, 0);
+        assert_eq!(stats.truncated_at, None);
+
+        fs::remove_file(&path).ok();
     }
 
     #[test]

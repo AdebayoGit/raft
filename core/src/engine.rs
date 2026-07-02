@@ -189,13 +189,14 @@ impl StorageEngine {
 
         // Open WAL.
         let wal_path = db_dir.join("wal.log");
-        let wal = Wal::open_with_mode(&wal_path, config.wal_sync)?;
+        let mut wal = Wal::open_with_mode(&wal_path, config.wal_sync)?;
 
-        // Create memtable and replay WAL.
+        // Create memtable and recover the WAL. A torn tail (partial last
+        // write after power loss) is expected — recover() keeps the valid
+        // prefix and truncates the damage.
         let mut memtable = MemTable::new(config.memtable_size);
-        let replay_iter = wal.replay()?;
-        for entry_result in replay_iter {
-            let entry = entry_result?;
+        let (entries, _stats) = wal.recover()?;
+        for entry in entries {
             if let Some(op) = decode_payload(&entry.payload) {
                 match op {
                     WalOp::Put { key, value } => memtable.insert(key, value),
@@ -698,6 +699,32 @@ mod tests {
                 assert_eq!(val, Some(format!("v{i:04}").into_bytes()), "key k{i:04}");
             }
         }
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reopen_recovers_from_torn_wal_tail() {
+        let dir = temp_dir("torn_wal_tail");
+        let config = default_config();
+
+        {
+            let mut engine = StorageEngine::open(&dir, config.clone()).unwrap();
+            engine.put(b"a".to_vec(), b"1".to_vec()).unwrap();
+            engine.put(b"b".to_vec(), b"2".to_vec()).unwrap();
+        }
+
+        // Simulate a torn write: append garbage that looks like a partial
+        // entry to the WAL tail.
+        let wal_path = dir.join("wal.log");
+        let mut data = fs::read(&wal_path).unwrap();
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05]);
+        fs::write(&wal_path, &data).unwrap();
+
+        // Reopen must succeed and recover both committed writes.
+        let engine = StorageEngine::open(&dir, config).unwrap();
+        assert_eq!(engine.get(b"a").unwrap(), Some(b"1".to_vec()));
+        assert_eq!(engine.get(b"b").unwrap(), Some(b"2".to_vec()));
 
         fs::remove_dir_all(&dir).ok();
     }
