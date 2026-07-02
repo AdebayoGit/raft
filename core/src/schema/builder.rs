@@ -138,6 +138,7 @@ impl SchemaBuilder {
         if self.fields.is_empty() {
             return Err(SchemaError::NoFields);
         }
+        Self::validate_fields(&self.fields)?;
         for f in &self.fields {
             if !f.conflict_strategy().is_compatible_with(f.field_type()) {
                 return Err(SchemaError::IncompatibleConflictStrategy {
@@ -182,7 +183,6 @@ impl SchemaBuilder {
     /// Validates all accumulated fields, returning the first error found.
     ///
     /// Called internally by [`build`](Self::build); exposed for testing.
-    #[allow(dead_code)]
     pub(crate) fn validate_fields(fields: &[FieldDef]) -> Result<(), SchemaError> {
         let mut seen = HashSet::with_capacity(fields.len());
         for f in fields {
@@ -254,6 +254,27 @@ mod tests {
 
         let tags = schema.field("tags").expect("tags field");
         assert_eq!(tags.crdt_hint(), CrdtHint::OrSet);
+    }
+
+    #[test]
+    fn build_duplicate_field_fails() {
+        let result = Schema::builder("User")
+            .field("name", FieldType::String)
+            .field("name", FieldType::Int)
+            .build();
+        assert!(matches!(result, Err(SchemaError::DuplicateField(n)) if n == "name"));
+    }
+
+    #[test]
+    fn build_empty_field_name_fails() {
+        let mut b = SchemaBuilder::new("User");
+        b.fields.push(FieldDef::new(
+            String::new(),
+            FieldType::String,
+            CrdtHint::Lww,
+            false,
+        ));
+        assert!(matches!(b.build(), Err(SchemaError::EmptyFieldName)));
     }
 
     #[test]
