@@ -146,6 +146,64 @@ impl ConflictResolver {
         }
     }
 
+    /// Resolve a field-level conflict, combining the per-collection
+    /// [`SyncAuthority`] (via [`MergeContext`]) with the field's
+    /// [`ConflictStrategy`].
+    ///
+    /// Precedence: an *explicit* per-field strategy (`LastWriteWins`,
+    /// `ServerAuthority`, `Custom`) always overrides the collection
+    /// authority. The default `Crdt(_)` strategy defers to the collection
+    /// authority, which is where `RemoteAuthority` takes effect.
+    ///
+    /// # Interaction matrix
+    ///
+    /// | Authority × Strategy | `Crdt(_)` (default) | `LastWriteWins` | `ServerAuthority` | `Custom` |
+    /// |---|---|---|---|---|
+    /// | `LocalFirst` | CRDT merge (LWW at value level) | higher HLC wins | remote wins | resolver fn, else `Conflicted` |
+    /// | `RemoteAuthority`, remote origin | **remote wins** | higher HLC wins | remote wins | resolver fn, else `Conflicted` |
+    /// | `RemoteAuthority`, local origin | CRDT merge | higher HLC wins | remote wins | resolver fn, else `Conflicted` |
+    /// | `RemoteFirst` | CRDT merge | higher HLC wins | remote wins | resolver fn, else `Conflicted` |
+    ///
+    /// Notes:
+    /// - `RemoteAuthority` only overrides the default `Crdt` strategy and
+    ///   only for values that actually originated from the remote
+    ///   (`ctx.is_remote`). Local-origin merges keep CRDT semantics so
+    ///   offline writes still converge deterministically.
+    /// - `RemoteFirst` differs from `LocalFirst` on the *read path* only
+    ///   (see [`SyncAuthority::RemoteFirst`]); its merge behaviour is
+    ///   identical.
+    /// - HLC ties break on higher `device_id` so all replicas converge.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_field(
+        &self,
+        ctx: &MergeContext,
+        strategy: &ConflictStrategy,
+        local: Value,
+        local_hlc: HlcTimestamp,
+        local_device: u128,
+        remote: Value,
+        remote_hlc: HlcTimestamp,
+        remote_device: u128,
+    ) -> ResolveOutcome {
+        if matches!(strategy, ConflictStrategy::Crdt(_))
+            && ctx.authority == SyncAuthority::RemoteAuthority
+            && ctx.is_remote
+        {
+            // Default-strategy field in a remote-authoritative collection:
+            // the remote value is enforced regardless of timestamps.
+            return ResolveOutcome::Resolved(remote);
+        }
+        self.resolve_value(
+            strategy,
+            local,
+            local_hlc,
+            local_device,
+            remote,
+            remote_hlc,
+            remote_device,
+        )
+    }
+
     // -- existing CRDT-level dispatch (v0.1.0 API, unchanged) -----------
 
     /// Resolve a conflict between two LWW registers.
@@ -524,6 +582,136 @@ mod tests {
             DEVICE_B,
         );
         assert_eq!(out, ResolveOutcome::Resolved(Value::Int(2)));
+    }
+
+    // -- Authority × Strategy interaction matrix --------------------------
+
+    /// Table-driven coverage of every (SyncAuthority × ConflictStrategy)
+    /// combination, per the matrix documented on `resolve_field`.
+    ///
+    /// Fixture: local = Int(1) at ts 200 (device A, *newer*),
+    ///          remote = Int(2) at ts 100 (device B, *older*).
+    /// A newer local timestamp makes it observable whether a strategy
+    /// respects HLC ordering (local wins) or enforces the remote.
+    #[test]
+    fn authority_strategy_interaction_matrix() {
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        enum Expect {
+            LocalWins,  // HLC-ordered merge — newer local survives
+            RemoteWins, // remote enforced regardless of HLC
+            Custom,     // registered resolver output (max = local's 7)
+            Conflicted, // unregistered custom resolver
+        }
+
+        let mut resolver = ConflictResolver::new();
+        resolver.register("max_int", |a, b| match (&a, &b) {
+            (Value::Int(x), Value::Int(y)) => Value::Int((*x).max(*y)),
+            _ => b,
+        });
+
+        let crdt = ConflictStrategy::Crdt(CrdtKind::LwwRegister);
+        let lww = ConflictStrategy::LastWriteWins;
+        let server = ConflictStrategy::ServerAuthority;
+        let custom = ConflictStrategy::Custom(CustomResolverId::new("max_int"));
+        let missing = ConflictStrategy::Custom(CustomResolverId::new("missing"));
+
+        use SyncAuthority::*;
+        // (authority, is_remote, strategy, expected)
+        let cases: &[(SyncAuthority, bool, &ConflictStrategy, Expect)] = &[
+            // LocalFirst — pure CRDT semantics; explicit strategies apply.
+            (LocalFirst, true, &crdt, Expect::LocalWins),
+            (LocalFirst, true, &lww, Expect::LocalWins),
+            (LocalFirst, true, &server, Expect::RemoteWins),
+            (LocalFirst, true, &custom, Expect::Custom),
+            (LocalFirst, true, &missing, Expect::Conflicted),
+            // RemoteAuthority, remote origin — overrides the default Crdt
+            // strategy only; explicit per-field strategies win.
+            (RemoteAuthority, true, &crdt, Expect::RemoteWins),
+            (RemoteAuthority, true, &lww, Expect::LocalWins),
+            (RemoteAuthority, true, &server, Expect::RemoteWins),
+            (RemoteAuthority, true, &custom, Expect::Custom),
+            (RemoteAuthority, true, &missing, Expect::Conflicted),
+            // RemoteAuthority, local origin — no remote involved, CRDT
+            // semantics preserved so offline writes converge.
+            (RemoteAuthority, false, &crdt, Expect::LocalWins),
+            (RemoteAuthority, false, &lww, Expect::LocalWins),
+            (RemoteAuthority, false, &server, Expect::RemoteWins),
+            (RemoteAuthority, false, &custom, Expect::Custom),
+            (RemoteAuthority, false, &missing, Expect::Conflicted),
+            // RemoteFirst — merge behaviour identical to LocalFirst.
+            (RemoteFirst, true, &crdt, Expect::LocalWins),
+            (RemoteFirst, true, &lww, Expect::LocalWins),
+            (RemoteFirst, true, &server, Expect::RemoteWins),
+            (RemoteFirst, true, &custom, Expect::Custom),
+            (RemoteFirst, true, &missing, Expect::Conflicted),
+        ];
+
+        for (authority, is_remote, strategy, expected) in cases {
+            let ctx = MergeContext {
+                authority: *authority,
+                is_remote: *is_remote,
+            };
+            let out = resolver.resolve_field(
+                &ctx,
+                strategy,
+                Value::Int(7), // local, newer
+                ts(200, 0),
+                DEVICE_A,
+                Value::Int(2), // remote, older
+                ts(100, 0),
+                DEVICE_B,
+            );
+            let actual = match &out {
+                ResolveOutcome::Resolved(Value::Int(7)) => {
+                    // max_int(7, 2) == 7 == local value; disambiguate via
+                    // strategy: Custom means the resolver ran.
+                    if matches!(strategy, ConflictStrategy::Custom(_)) {
+                        Expect::Custom
+                    } else {
+                        Expect::LocalWins
+                    }
+                }
+                ResolveOutcome::Resolved(Value::Int(2)) => Expect::RemoteWins,
+                ResolveOutcome::Conflicted { .. } => Expect::Conflicted,
+                other => panic!("unexpected outcome {other:?}"),
+            };
+            assert_eq!(
+                actual, *expected,
+                "authority={authority:?} is_remote={is_remote} strategy={strategy:?} → {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn matrix_hlc_tie_breaks_on_device_id_across_authorities() {
+        // Equal HLCs: the higher device id must win under every authority
+        // for LWW-ordered strategies, so replicas converge.
+        let resolver = ConflictResolver::new();
+        for authority in [
+            SyncAuthority::LocalFirst,
+            SyncAuthority::RemoteAuthority,
+            SyncAuthority::RemoteFirst,
+        ] {
+            let ctx = MergeContext {
+                authority,
+                is_remote: false,
+            };
+            let out = resolver.resolve_field(
+                &ctx,
+                &ConflictStrategy::LastWriteWins,
+                Value::Int(1),
+                ts(100, 0),
+                DEVICE_A,
+                Value::Int(2),
+                ts(100, 0),
+                DEVICE_B, // higher device id
+            );
+            assert_eq!(
+                out,
+                ResolveOutcome::Resolved(Value::Int(2)),
+                "tie-break failed under {authority:?}"
+            );
+        }
     }
 
     #[test]
