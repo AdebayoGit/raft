@@ -28,7 +28,9 @@ use crate::index::{BTreeIndex, DocId, HashIndex, Index};
 use crate::query::{
     Document, DocumentStore, IndexInfo, IndexKind, IndexSet, Query, QueryExecutor, QueryPlanner,
 };
-use crate::schema::{validate_document, Schema, SchemaViolation};
+use crate::schema::{
+    validate_document, validate_evolution, EvolutionResult, Schema, SchemaViolation,
+};
 use crate::transaction::{TransactionError, VersionedDocument, VersionedStore};
 
 #[cfg(feature = "async")]
@@ -54,6 +56,9 @@ pub enum DatabaseError {
         collection: String,
         violation: SchemaViolation,
     },
+
+    #[error("invalid schema migration for collection `{collection}`: {reason}")]
+    InvalidMigration { collection: String, reason: String },
 }
 
 const DOC_PREFIX: &[u8] = b"__doc__/";
@@ -238,12 +243,29 @@ impl Database {
     /// types, and missing required fields are rejected with
     /// [`DatabaseError::SchemaViolation`].
     ///
-    /// The schema is persisted and rehydrated on reopen. Re-registering
-    /// replaces the previous schema for the collection.
+    /// The schema is persisted and rehydrated on reopen.
+    ///
+    /// Re-registering for a collection that already has a schema is a
+    /// **migration** and is validated: additive changes (new optional
+    /// fields, relaxed requirements) are always allowed; breaking changes
+    /// (removed fields, retyped fields, optional→required) additionally
+    /// require the new schema's version to be strictly greater than the
+    /// old one. Version regressions are always rejected. Violations
+    /// surface as [`DatabaseError::InvalidMigration`].
     pub fn register_schema(&self, schema: Schema) -> Result<(), DatabaseError> {
         let payload =
             serde_json::to_vec(&schema).map_err(|e| DatabaseError::Decode(e.to_string()))?;
+        // Engine lock first — serialises concurrent registrations so the
+        // evolution check below cannot race with another writer.
         let mut engine = self.inner.lock_engine();
+
+        {
+            let schemas = self.inner.read_schemas();
+            if let Some(old) = schemas.get(schema.name()) {
+                validate_migration(old, &schema)?;
+            }
+        }
+
         engine.put(schema_key(schema.name()), payload)?;
         drop(engine);
 
@@ -1030,6 +1052,43 @@ fn schema_key(collection: &str) -> Vec<u8> {
     k
 }
 
+/// Validate that `new` is a legal migration from `old`.
+///
+/// Rules:
+/// - Version regressions are always rejected.
+/// - Identical and additive evolutions are allowed at any version.
+/// - Breaking evolutions require `new.version() > old.version()`.
+fn validate_migration(old: &Schema, new: &Schema) -> Result<(), DatabaseError> {
+    if new.version() < old.version() {
+        return Err(DatabaseError::InvalidMigration {
+            collection: old.name().to_string(),
+            reason: format!(
+                "version regression from {} to {}",
+                old.version(),
+                new.version()
+            ),
+        });
+    }
+    match validate_evolution(old, new) {
+        EvolutionResult::Identical | EvolutionResult::Additive { .. } => Ok(()),
+        EvolutionResult::Breaking { changes, .. } => {
+            if new.version() > old.version() {
+                Ok(())
+            } else {
+                let reason = changes
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                Err(DatabaseError::InvalidMigration {
+                    collection: old.name().to_string(),
+                    reason: format!("breaking change without version bump: {reason}"),
+                })
+            }
+        }
+    }
+}
+
 /// Position of the first occurrence of `needle` in `haystack`.
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
@@ -1622,6 +1681,120 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, DatabaseError::SchemaViolation { .. }));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── Schema migrations ──
+
+    #[test]
+    fn migration_additive_field_allowed_without_version_bump() {
+        let dir = temp_dir("migration_additive");
+        let db = Database::open(&dir).unwrap();
+        db.register_schema(users_schema()).unwrap();
+
+        let evolved = crate::schema::Schema::builder("users")
+            .required_field("name", crate::schema::FieldType::String)
+            .field("age", crate::schema::FieldType::Int)
+            .field("email", crate::schema::FieldType::String)
+            .build()
+            .unwrap();
+        db.register_schema(evolved).unwrap();
+
+        // The new optional field is now accepted on writes.
+        let doc = user(1, "Alice", 30).with_field("email", Value::String("a@x.io".into()));
+        db.put("users", doc).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn migration_new_collection_registration_allowed() {
+        let dir = temp_dir("migration_new_collection");
+        let db = Database::open(&dir).unwrap();
+        db.register_schema(users_schema()).unwrap();
+
+        let teams = crate::schema::Schema::builder("teams")
+            .required_field("title", crate::schema::FieldType::String)
+            .build()
+            .unwrap();
+        db.register_schema(teams).unwrap();
+        assert!(db.schema("teams").is_some());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn migration_field_removal_without_version_bump_rejected() {
+        let dir = temp_dir("migration_removal_rejected");
+        let db = Database::open(&dir).unwrap();
+        db.register_schema(users_schema()).unwrap();
+
+        // Drops `age` but keeps the same version — breaking, must fail.
+        let breaking = crate::schema::Schema::builder("users")
+            .required_field("name", crate::schema::FieldType::String)
+            .build()
+            .unwrap();
+        let err = db.register_schema(breaking).unwrap_err();
+        assert!(matches!(err, DatabaseError::InvalidMigration { .. }));
+
+        // Old schema must still be in force: `age` remains a known field.
+        db.put("users", user(1, "Alice", 30)).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn migration_breaking_change_with_version_bump_allowed() {
+        let dir = temp_dir("migration_breaking_bumped");
+        let db = Database::open(&dir).unwrap();
+        db.register_schema(users_schema()).unwrap();
+
+        let breaking = crate::schema::Schema::builder("users")
+            .version(crate::schema::SchemaVersion(2))
+            .required_field("name", crate::schema::FieldType::String)
+            .build()
+            .unwrap();
+        db.register_schema(breaking).unwrap();
+
+        // `age` was removed — writes with it are now rejected.
+        let err = db.put("users", user(1, "Alice", 30)).unwrap_err();
+        assert!(matches!(err, DatabaseError::SchemaViolation { .. }));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn migration_version_regression_rejected() {
+        let dir = temp_dir("migration_regression");
+        let db = Database::open(&dir).unwrap();
+        let v2 = crate::schema::Schema::builder("users")
+            .version(crate::schema::SchemaVersion(2))
+            .required_field("name", crate::schema::FieldType::String)
+            .build()
+            .unwrap();
+        db.register_schema(v2).unwrap();
+
+        // Identical fields but lower version — always rejected.
+        let v1 = crate::schema::Schema::builder("users")
+            .required_field("name", crate::schema::FieldType::String)
+            .build()
+            .unwrap();
+        let err = db.register_schema(v1).unwrap_err();
+        assert!(matches!(err, DatabaseError::InvalidMigration { .. }));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn migration_rules_survive_reopen() {
+        let dir = temp_dir("migration_reopen");
+        {
+            let db = Database::open(&dir).unwrap();
+            db.register_schema(users_schema()).unwrap();
+        }
+
+        let db = Database::open(&dir).unwrap();
+        let breaking = crate::schema::Schema::builder("users")
+            .required_field("name", crate::schema::FieldType::String)
+            .build()
+            .unwrap();
+        let err = db.register_schema(breaking).unwrap_err();
+        assert!(matches!(err, DatabaseError::InvalidMigration { .. }));
         std::fs::remove_dir_all(&dir).ok();
     }
 }
