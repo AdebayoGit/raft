@@ -27,16 +27,30 @@ pub enum Value {
 impl Value {
     /// Encode the value to a byte representation suitable for index keys.
     ///
-    /// Numeric types are big-endian so that byte ordering matches value
-    /// ordering. Strings and bytes are used as-is.
+    /// Every encoding starts with a one-byte type tag so values of
+    /// different types can never collide (`Null` vs `""` vs `0` vs
+    /// `false`). Within a type, byte ordering matches value ordering:
+    /// numeric types are big-endian with sign adjustments, strings and
+    /// bytes are used as-is after the tag.
     pub fn to_index_bytes(&self) -> Vec<u8> {
+        const TAG_NULL: u8 = 0x00;
+        const TAG_BOOL: u8 = 0x01;
+        const TAG_INT: u8 = 0x02;
+        const TAG_FLOAT: u8 = 0x03;
+        const TAG_STRING: u8 = 0x04;
+        const TAG_BYTES: u8 = 0x05;
+
         match self {
-            Value::String(s) => s.as_bytes().to_vec(),
+            Value::Null => vec![TAG_NULL],
+            Value::Bool(b) => vec![TAG_BOOL, u8::from(*b)],
             // Flip the sign bit so that signed integers sort correctly in
             // unsigned byte order.
             Value::Int(n) => {
                 let unsigned = (*n as u64) ^ (1u64 << 63);
-                unsigned.to_be_bytes().to_vec()
+                let mut out = Vec::with_capacity(9);
+                out.push(TAG_INT);
+                out.extend_from_slice(&unsigned.to_be_bytes());
+                out
             }
             Value::Float(f) => {
                 let bits = f.to_bits();
@@ -48,11 +62,23 @@ impl Value {
                 } else {
                     bits ^ (1u64 << 63)
                 };
-                sortable.to_be_bytes().to_vec()
+                let mut out = Vec::with_capacity(9);
+                out.push(TAG_FLOAT);
+                out.extend_from_slice(&sortable.to_be_bytes());
+                out
             }
-            Value::Bool(b) => vec![u8::from(*b)],
-            Value::Bytes(b) => b.clone(),
-            Value::Null => Vec::new(),
+            Value::String(s) => {
+                let mut out = Vec::with_capacity(1 + s.len());
+                out.push(TAG_STRING);
+                out.extend_from_slice(s.as_bytes());
+                out
+            }
+            Value::Bytes(b) => {
+                let mut out = Vec::with_capacity(1 + b.len());
+                out.push(TAG_BYTES);
+                out.extend_from_slice(b);
+                out
+            }
         }
     }
 }
@@ -156,6 +182,47 @@ mod tests {
         let pos = Value::Float(1.5).to_index_bytes();
         assert!(neg < zero);
         assert!(zero < pos);
+    }
+
+    #[test]
+    fn index_bytes_distinguish_null_empty_string_zero_false() {
+        let keys = [
+            Value::Null.to_index_bytes(),
+            Value::String(String::new()).to_index_bytes(),
+            Value::Int(0).to_index_bytes(),
+            Value::Bool(false).to_index_bytes(),
+            Value::Bytes(Vec::new()).to_index_bytes(),
+            Value::Float(0.0).to_index_bytes(),
+        ];
+        for (i, a) in keys.iter().enumerate() {
+            for (j, b) in keys.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "index keys {i} and {j} must not collide");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn index_bytes_distinguish_string_from_equal_bytes() {
+        let s = Value::String("abc".into()).to_index_bytes();
+        let b = Value::Bytes(b"abc".to_vec()).to_index_bytes();
+        assert_ne!(s, b);
+    }
+
+    #[test]
+    fn index_bytes_distinguish_bool_from_small_bytes() {
+        assert_ne!(
+            Value::Bool(true).to_index_bytes(),
+            Value::Bytes(vec![1]).to_index_bytes()
+        );
+    }
+
+    #[test]
+    fn string_index_bytes_preserve_order() {
+        let a = Value::String("apple".into()).to_index_bytes();
+        let b = Value::String("banana".into()).to_index_bytes();
+        assert!(a < b);
     }
 
     #[test]
