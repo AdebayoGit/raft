@@ -513,8 +513,7 @@ mod tests {
             let path = temp_wal_path(name);
             let _ = fs::remove_file(&path);
 
-            let entries_in: Vec<WalEntry> =
-                (0..7).map(|i| make_entry(i, 0, b"payload")).collect();
+            let entries_in: Vec<WalEntry> = (0..7).map(|i| make_entry(i, 0, b"payload")).collect();
             {
                 let mut wal = Wal::open_with_mode(&path, mode).unwrap();
                 for e in &entries_in {

@@ -255,9 +255,7 @@ impl ManifestRecord {
                 if count > payload_cursor.remaining() / MIN_META_SIZE {
                     return Err(ManifestError::CorruptRecord {
                         offset,
-                        reason: format!(
-                            "snapshot table count {count} exceeds payload capacity"
-                        ),
+                        reason: format!("snapshot table count {count} exceeds payload capacity"),
                     });
                 }
                 let mut tables = Vec::with_capacity(count);
