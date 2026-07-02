@@ -667,6 +667,35 @@ mod tests {
     }
 
     #[test]
+    fn on_disk_bloom_scales_with_entry_count() {
+        // 30k entries — past the old fixed 10k bloom sizing. The filter
+        // persisted in the file must keep the ~1% FP target.
+        let path = temp_path("bloom_scales");
+        let _ = fs::remove_file(&path);
+
+        let entries =
+            (0..30_000u32).map(|i| (format!("key-{i:08}").into_bytes(), Some(b"v".to_vec())));
+        let w = SSTableWriter::new(&path).with_block_size(4096);
+        w.write(entries).unwrap();
+
+        let reader = SSTableReader::open(&path).unwrap();
+        let probes = 10_000u32;
+        let false_positives = (0..probes)
+            .filter(|i| {
+                reader
+                    .bloom
+                    .may_contain(format!("absent-{i:08}").as_bytes())
+            })
+            .count();
+        assert!(
+            false_positives <= 200,
+            "fp rate too high: {false_positives}/{probes}"
+        );
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn iter_streams_all_entries_in_order() {
         let entries = sample_entries(200);
         let reader = write_and_open("iter_streams", entries.clone());

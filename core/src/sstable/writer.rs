@@ -6,6 +6,11 @@ use super::bloom::BloomFilter;
 use super::error::SSTableError;
 use super::{DEFAULT_BLOCK_SIZE, SSTABLE_MAGIC};
 
+/// Target bloom-filter false-positive rate. The filter is sized from the
+/// actual key count of each table, so this rate holds regardless of how
+/// many entries the table contains.
+const BLOOM_FP_RATE: f64 = 0.01;
+
 /// Builds an immutable SSTable file from a sorted iterator of key-value pairs.
 pub struct SSTableWriter {
     path: PathBuf,
@@ -116,13 +121,16 @@ impl SSTableWriter {
     ) -> Result<usize, SSTableError> {
         let mut file = BufWriter::new(File::create(&self.path)?);
         let mut index_entries: Vec<IndexEntry> = Vec::new();
-        let mut bloom = BloomFilter::with_rate(10_000, 0.01);
+        // Key hashes are collected while streaming so the bloom filter can
+        // be sized for the *actual* entry count once it is known (a fixed
+        // pre-sized filter degrades badly past its expected key count).
+        let mut key_hashes: Vec<u64> = Vec::new();
         let mut block = BlockBuilder::new();
         let mut current_offset: u64 = 0;
         let mut total_entries: usize = 0;
 
         for (key, value) in iter {
-            bloom.insert(&key);
+            key_hashes.push(BloomFilter::hash64(&key));
             block.add(&key, &value);
             total_entries += 1;
 
@@ -160,8 +168,10 @@ impl SSTableWriter {
             return Err(SSTableError::EmptyInput);
         }
 
-        // ── Bloom filter ──
+        // ── Bloom filter — sized to the exact key count ──
         let bloom_offset = current_offset;
+        let bloom = BloomFilter::from_hashes(&key_hashes, BLOOM_FP_RATE);
+        drop(key_hashes);
         let bloom_data = bloom.encode();
         file.write_all(&bloom_data)?;
         current_offset += bloom_data.len() as u64;

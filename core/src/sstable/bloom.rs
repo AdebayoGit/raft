@@ -33,9 +33,26 @@ impl BloomFilter {
         }
     }
 
+    /// Build a filter sized for exactly `hashes.len()` keys at `fp_rate`,
+    /// from hashes pre-computed with [`BloomFilter::hash64`]. Lets the
+    /// SSTable writer stream entries first and size the filter to the
+    /// real key count afterwards.
+    pub(crate) fn from_hashes(hashes: &[u64], fp_rate: f64) -> Self {
+        let mut bf = Self::with_rate(hashes.len(), fp_rate);
+        for &h in hashes {
+            bf.insert_hash(h);
+        }
+        bf
+    }
+
     /// Insert a key into the filter.
     pub fn insert(&mut self, key: &[u8]) {
-        let (h1, h2) = self.hash_pair(key);
+        self.insert_hash(Self::hash64(key));
+    }
+
+    /// Insert a pre-computed [`BloomFilter::hash64`] value.
+    fn insert_hash(&mut self, h: u64) {
+        let (h1, h2) = Self::split(h);
         for i in 0..self.num_hashes {
             let bit = self.probe(h1, h2, i);
             self.set_bit(bit);
@@ -47,7 +64,7 @@ impl BloomFilter {
     /// Returns `false` if the key is definitely absent.
     /// Returns `true` if the key is probably present (subject to false positives).
     pub fn may_contain(&self, key: &[u8]) -> bool {
-        let (h1, h2) = self.hash_pair(key);
+        let (h1, h2) = Self::split(Self::hash64(key));
         for i in 0..self.num_hashes {
             let bit = self.probe(h1, h2, i);
             if !self.get_bit(bit) {
@@ -87,18 +104,20 @@ impl BloomFilter {
         })
     }
 
-    /// Two independent hashes via splitting a single 64-bit hash.
-    /// Uses the FNV-1a family for simplicity and speed — no crypto needed.
-    fn hash_pair(&self, key: &[u8]) -> (u32, u32) {
-        // FNV-1a 64-bit
+    /// Hash a key to the 64-bit value all probes derive from.
+    /// Uses FNV-1a for simplicity and speed — no crypto needed.
+    pub(crate) fn hash64(key: &[u8]) -> u64 {
         let mut h: u64 = 0xcbf29ce484222325;
         for &b in key {
             h ^= b as u64;
             h = h.wrapping_mul(0x100000001b3);
         }
-        let h1 = h as u32;
-        let h2 = (h >> 32) as u32;
-        (h1, h2)
+        h
+    }
+
+    /// Two independent probe hashes via splitting a single 64-bit hash.
+    fn split(h: u64) -> (u32, u32) {
+        (h as u32, (h >> 32) as u32)
     }
 
     /// Double hashing: position = (h1 + i*h2) mod m
@@ -148,6 +167,31 @@ mod tests {
         assert!(
             false_positives < 50,
             "too many false positives: {false_positives}/1000"
+        );
+    }
+
+    #[test]
+    fn from_hashes_holds_fp_rate_at_scale() {
+        // Well past the old fixed 10k sizing — the filter must be sized
+        // from the actual key count and keep the configured 1% FP rate.
+        let n = 50_000u32;
+        let hashes: Vec<u64> = (0..n)
+            .map(|i| BloomFilter::hash64(&i.to_be_bytes()))
+            .collect();
+        let bf = BloomFilter::from_hashes(&hashes, 0.01);
+
+        for i in 0..n {
+            assert!(bf.may_contain(&i.to_be_bytes()), "key {i} must be found");
+        }
+
+        let probes = 10_000u32;
+        let false_positives = (1_000_000..1_000_000 + probes)
+            .filter(|i| bf.may_contain(&i.to_be_bytes()))
+            .count();
+        // Expect ~100/10_000 at 1%; allow 2x margin for hash variance.
+        assert!(
+            false_positives <= 200,
+            "fp rate too high: {false_positives}/{probes}"
         );
     }
 
