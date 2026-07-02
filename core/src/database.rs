@@ -638,6 +638,11 @@ impl crate::reactive::QueryRunner for DatabaseQueryRunner {
     fn execute(&self, query: &Query) -> Vec<Document> {
         execute_query(&self.inner, query)
     }
+
+    fn get_document(&self, collection: &str, id: DocId) -> Option<Document> {
+        let collections = self.inner.read_collections();
+        collections.get(collection)?.docs.get(&id).cloned()
+    }
 }
 
 // ── Transaction ─────────────────────────────────────────────────────────

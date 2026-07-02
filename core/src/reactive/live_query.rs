@@ -15,7 +15,7 @@ use tokio::sync::broadcast;
 use crate::index::DocId;
 use crate::query::{Document, Query};
 
-use super::event::MutationEvent;
+use super::event::{MutationEvent, MutationType};
 
 /// The diff between two consecutive query result sets.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -40,6 +40,9 @@ impl QueryDiff {
 pub trait QueryRunner: Send + Sync {
     /// Execute the query and return the current result set.
     fn execute(&self, query: &Query) -> Vec<Document>;
+
+    /// Fetch a single document by id, for incremental re-evaluation.
+    fn get_document(&self, collection: &str, id: DocId) -> Option<Document>;
 }
 
 /// A live query subscription that yields [`QueryDiff`] items.
@@ -136,11 +139,17 @@ impl<R: QueryRunner> LiveQuery<R> {
                 continue;
             }
 
-            // Re-evaluate.
-            let new_results = self.runner.execute(&self.query);
-            let new_map = index_by_id(new_results);
-            let diff = compute_diff(self.previous.as_ref().unwrap(), &new_map);
-            self.previous = Some(new_map);
+            let diff = if self.can_evaluate_incrementally() {
+                self.incremental_diff(&event)
+            } else {
+                // Sort / limit / offset make membership depend on other
+                // documents — fall back to a full re-evaluation.
+                let new_results = self.runner.execute(&self.query);
+                let new_map = index_by_id(new_results);
+                let diff = compute_diff(self.previous.as_ref().unwrap(), &new_map);
+                self.previous = Some(new_map);
+                diff
+            };
 
             if !diff.is_empty() {
                 return Some(diff);
@@ -149,6 +158,70 @@ impl<R: QueryRunner> LiveQuery<R> {
             // affected a doc that doesn't match the filter), loop and
             // wait for the next event.
         }
+    }
+
+    /// Incremental evaluation is only sound when result-set membership
+    /// depends solely on the document itself: sort, limit, and offset
+    /// all make membership depend on the rest of the collection.
+    fn can_evaluate_incrementally(&self) -> bool {
+        self.query.get_sort().is_none()
+            && self.query.get_limit().is_none()
+            && self.query.get_offset().is_none()
+    }
+
+    /// Test only the mutated document against the query's predicate and
+    /// patch the previous snapshot in place — O(1) per event instead of
+    /// re-scanning the whole collection for every subscriber.
+    fn incremental_diff(&mut self, event: &MutationEvent) -> QueryDiff {
+        let previous = self
+            .previous
+            .as_mut()
+            .expect("snapshot bootstrapped before events are processed");
+
+        let current = match event.mutation_type {
+            MutationType::Delete => None,
+            MutationType::Insert | MutationType::Update => self
+                .runner
+                .get_document(&event.collection, event.doc_id)
+                .filter(|doc| match self.query.get_filter() {
+                    Some(filter) => {
+                        filter.matches(&|field_name: &str| doc.get(field_name).cloned())
+                    }
+                    None => true,
+                }),
+        };
+
+        let mut diff = QueryDiff {
+            added: Vec::new(),
+            removed: Vec::new(),
+            updated: Vec::new(),
+        };
+
+        match (previous.get(&event.doc_id), current) {
+            // Now matches, wasn't in the result set before.
+            (None, Some(doc)) => {
+                previous.insert(event.doc_id, doc.clone());
+                diff.added.push(doc);
+            }
+            // Still matches — emit only if the content changed.
+            (Some(old), Some(doc)) => {
+                if *old != doc {
+                    previous.insert(event.doc_id, doc.clone());
+                    diff.updated.push(doc);
+                }
+            }
+            // No longer matches (or was deleted).
+            (Some(_), None) => {
+                let old = previous
+                    .remove(&event.doc_id)
+                    .expect("entry present per match arm");
+                diff.removed.push(old);
+            }
+            // Never matched — nothing to do.
+            (None, None) => {}
+        }
+
+        diff
     }
 }
 
@@ -233,6 +306,11 @@ mod tests {
                 })
                 .cloned()
                 .collect()
+        }
+
+        fn get_document(&self, _collection: &str, id: DocId) -> Option<Document> {
+            let docs = self.docs.lock().unwrap();
+            docs.iter().find(|d| d.id == id).cloned()
         }
     }
 
@@ -419,8 +497,9 @@ mod tests {
         let diff = lq.next_diff().await.unwrap();
         assert_eq!(diff.added.len(), 1);
         assert_eq!(diff.added[0].id, DocId(2));
-        // Bootstrap + one re-eval for the users event. Orders event skipped.
-        assert_eq!(runner.query_count(), 2);
+        // Bootstrap only — the users event is evaluated incrementally
+        // (single-doc fetch), and the orders event is skipped entirely.
+        assert_eq!(runner.query_count(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -566,5 +645,64 @@ mod tests {
 
         let diff = lq.next_diff().await.unwrap();
         assert!(!diff.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn incremental_eval_never_rescans_collection() {
+        let bus = Arc::new(EventBus::new());
+        let runner = Arc::new(MockRunner::new(vec![user(1, "Alice", true)]));
+        // No sort / limit / offset → eligible for incremental evaluation.
+        let query = Query::collection("users").filter(Filter::eq("active", Value::Bool(true)));
+        let mut lq = LiveQuery::new(query, runner.clone(), &bus);
+
+        let bus2 = bus.clone();
+        let runner2 = runner.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            // Insert, update, then delete — each should be a single-doc
+            // fetch, never a full query re-execution.
+            runner2.set_docs(vec![user(1, "Alice", true), user(2, "Bob", true)]);
+            bus2.publish(MutationEvent::insert("users", DocId(2)));
+            tokio::task::yield_now().await;
+            runner2.set_docs(vec![user(1, "Alice", false), user(2, "Bob", true)]);
+            bus2.publish(MutationEvent::update("users", DocId(1)));
+            tokio::task::yield_now().await;
+            runner2.set_docs(vec![user(1, "Alice", false)]);
+            bus2.publish(MutationEvent::delete("users", DocId(2)));
+        });
+
+        let insert_diff = lq.next_diff().await.unwrap();
+        assert_eq!(insert_diff.added.len(), 1);
+        let update_diff = lq.next_diff().await.unwrap();
+        assert_eq!(update_diff.removed.len(), 1); // Alice no longer matches
+        let delete_diff = lq.next_diff().await.unwrap();
+        assert_eq!(delete_diff.removed.len(), 1);
+
+        // Bootstrap is the only full query execution.
+        assert_eq!(runner.query_count(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sorted_query_falls_back_to_full_reeval() {
+        use crate::query::Sort;
+
+        let bus = Arc::new(EventBus::new());
+        let runner = Arc::new(MockRunner::new(vec![user(1, "Alice", true)]));
+        // Sort makes membership depend on other docs → full re-eval path.
+        let query = Query::collection("users").sort(Sort::asc("name"));
+        let mut lq = LiveQuery::new(query, runner.clone(), &bus);
+
+        let bus2 = bus.clone();
+        let runner2 = runner.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            runner2.set_docs(vec![user(1, "Alice", true), user(2, "Bob", true)]);
+            bus2.publish(MutationEvent::insert("users", DocId(2)));
+        });
+
+        let diff = lq.next_diff().await.unwrap();
+        assert_eq!(diff.added.len(), 1);
+        // Bootstrap + one full re-eval for the event.
+        assert_eq!(runner.query_count(), 2);
     }
 }
