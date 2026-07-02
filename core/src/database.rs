@@ -86,6 +86,27 @@ pub(crate) struct DatabaseInner {
     bus: EventBus,
 }
 
+impl DatabaseInner {
+    /// Lock the engine, recovering from poison. The engine's own state is
+    /// kept consistent by its internal error handling; a panic in another
+    /// thread must not permanently brick the database.
+    fn lock_engine(&self) -> std::sync::MutexGuard<'_, StorageEngine> {
+        self.engine.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Read-lock the collections map, recovering from poison.
+    fn read_collections(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, CollectionState>> {
+        self.collections.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Write-lock the collections map, recovering from poison.
+    fn write_collections(
+        &self,
+    ) -> std::sync::RwLockWriteGuard<'_, HashMap<String, CollectionState>> {
+        self.collections.write().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// High-level embedded database: collections of typed documents on top of
 /// a durable LSM-tree.
 pub struct Database {
@@ -123,25 +144,25 @@ impl Database {
     /// is honoured. Returns the new version number.
     pub fn put(&self, collection: &str, doc: Document) -> Result<u64, DatabaseError> {
         let id = doc.id;
-        let mut engine = self.inner.engine.lock().expect("engine poisoned");
-        let mut collections = self
-            .inner
-            .collections
-            .write()
-            .expect("collections poisoned");
+        let key = doc_key(collection, id);
+        let payload = serialize_doc(&doc)?;
 
+        // The engine lock serialises writers; the collections lock is only
+        // taken *after* durable I/O completes, so readers are never blocked
+        // behind an fsync.
+        let mut engine = self.inner.lock_engine();
+        engine.put(key, payload)?;
+
+        let mut collections = self.inner.write_collections();
         let state = collections.entry(collection.to_string()).or_default();
         let was_present = state.docs.contains_key(&id);
         let version = state.next_version;
         state.next_version += 1;
         state.next_doc_id = state.next_doc_id.max(id.0 + 1);
-
-        let key = doc_key(collection, id);
-        let payload = serialize_doc(&doc)?;
-        engine.put(key, payload)?;
-
         state.docs.insert(id, doc);
         state.versions.insert(id, version);
+        drop(collections);
+        drop(engine);
 
         #[cfg(feature = "async")]
         {
@@ -174,44 +195,52 @@ impl Database {
 
     /// Fetch a document by id.
     pub fn get(&self, collection: &str, id: DocId) -> Option<Document> {
-        let collections = self.inner.collections.read().expect("collections poisoned");
+        let collections = self.inner.read_collections();
         collections.get(collection)?.docs.get(&id).cloned()
     }
 
     /// Delete a document by id. Returns `true` if a document was actually
     /// removed.
     pub fn delete(&self, collection: &str, id: DocId) -> Result<bool, DatabaseError> {
-        let mut engine = self.inner.engine.lock().expect("engine poisoned");
-        let mut collections = self
-            .inner
-            .collections
-            .write()
-            .expect("collections poisoned");
+        // Engine lock first — serialises writers so the existence check
+        // below cannot race with another writer.
+        let mut engine = self.inner.lock_engine();
 
-        let Some(state) = collections.get_mut(collection) else {
-            return Ok(false);
+        let present = {
+            let collections = self.inner.read_collections();
+            collections
+                .get(collection)
+                .is_some_and(|s| s.docs.contains_key(&id))
         };
-
-        let removed = state.docs.remove(&id).is_some();
-        state.versions.remove(&id);
-
-        if removed {
-            engine.delete(doc_key(collection, id))?;
-            #[cfg(feature = "async")]
-            self.inner.bus.publish(MutationEvent {
-                collection: collection.to_string(),
-                doc_id: id,
-                mutation_type: MutationType::Delete,
-                origin: MutationOrigin::Local,
-            });
+        if !present {
+            return Ok(false);
         }
 
-        Ok(removed)
+        // Durable tombstone first, then the (brief) in-memory update.
+        engine.delete(doc_key(collection, id))?;
+
+        let mut collections = self.inner.write_collections();
+        if let Some(state) = collections.get_mut(collection) {
+            state.docs.remove(&id);
+            state.versions.remove(&id);
+        }
+        drop(collections);
+        drop(engine);
+
+        #[cfg(feature = "async")]
+        self.inner.bus.publish(MutationEvent {
+            collection: collection.to_string(),
+            doc_id: id,
+            mutation_type: MutationType::Delete,
+            origin: MutationOrigin::Local,
+        });
+
+        Ok(true)
     }
 
     /// All document ids in `collection`, sorted ascending.
     pub fn list_ids(&self, collection: &str) -> Vec<DocId> {
-        let collections = self.inner.collections.read().expect("collections poisoned");
+        let collections = self.inner.read_collections();
         let Some(state) = collections.get(collection) else {
             return Vec::new();
         };
@@ -222,7 +251,7 @@ impl Database {
 
     /// Number of documents in `collection`.
     pub fn count(&self, collection: &str) -> usize {
-        let collections = self.inner.collections.read().expect("collections poisoned");
+        let collections = self.inner.read_collections();
         collections
             .get(collection)
             .map(|s| s.docs.len())
@@ -297,20 +326,20 @@ impl Database {
     /// Insert or update a raw key-value pair on the underlying engine.
     /// Bypasses the document layer entirely.
     pub fn raw_put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), DatabaseError> {
-        let mut engine = self.inner.engine.lock().expect("engine poisoned");
+        let mut engine = self.inner.lock_engine();
         engine.put(key, value)?;
         Ok(())
     }
 
     /// Look up a raw key on the underlying engine.
     pub fn raw_get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, DatabaseError> {
-        let engine = self.inner.engine.lock().expect("engine poisoned");
+        let engine = self.inner.lock_engine();
         Ok(engine.get(key)?)
     }
 
     /// Delete a raw key on the underlying engine.
     pub fn raw_delete(&self, key: Vec<u8>) -> Result<(), DatabaseError> {
-        let mut engine = self.inner.engine.lock().expect("engine poisoned");
+        let mut engine = self.inner.lock_engine();
         engine.delete(key)?;
         Ok(())
     }
@@ -318,11 +347,7 @@ impl Database {
     // ── Internal helpers ────────────────────────────────────────────────
 
     fn next_id(&self, collection: &str) -> DocId {
-        let mut collections = self
-            .inner
-            .collections
-            .write()
-            .expect("collections poisoned");
+        let mut collections = self.inner.write_collections();
         let state = collections.entry(collection.to_string()).or_default();
         let id = DocId(state.next_doc_id);
         state.next_doc_id += 1;
@@ -399,7 +424,7 @@ impl DocumentStore for CollectionView<'_> {
 /// Shared query execution against the in-memory collection state.
 /// Used by both [`Database::query`] and [`DatabaseQueryRunner`].
 fn execute_query(inner: &DatabaseInner, query: &Query) -> Vec<Document> {
-    let collections = inner.collections.read().expect("collections poisoned");
+    let collections = inner.read_collections();
     let view = CollectionView {
         state: collections.get(query.collection_name()),
     };
@@ -479,7 +504,7 @@ impl DbTransaction {
             return Ok(None);
         }
 
-        let collections = self.inner.collections.read().expect("collections poisoned");
+        let collections = self.inner.read_collections();
         let (doc, version) = collections
             .get(collection)
             .and_then(|s| {
@@ -517,41 +542,60 @@ impl DbTransaction {
         self.ensure_active()?;
         self.state = TxnState::Finalised;
 
-        let mut engine = self.inner.engine.lock().expect("engine poisoned");
-        let mut collections = self
-            .inner
-            .collections
-            .write()
-            .expect("collections poisoned");
+        // Phase 0: serialize all writes up front so an encoding error
+        // aborts the commit before any durable I/O happens.
+        let mut writes: Vec<((String, DocId), Document, Vec<u8>)> =
+            Vec::with_capacity(self.write_set.len());
+        for ((coll, id), doc) in self.write_set.drain() {
+            let payload = serialize_doc(&doc)?;
+            writes.push(((coll, id), doc, payload));
+        }
 
-        // Phase 1: validate read set.
-        for ((coll, id), expected) in &self.read_set {
-            let current = collections
-                .get(coll)
-                .and_then(|s| s.versions.get(id).copied())
-                .unwrap_or(0);
-            if current != *expected {
-                return Err(DatabaseError::Transaction(TransactionError::Conflict {
-                    doc_id: *id,
-                    read_version: *expected,
-                    current_version: current,
-                }));
+        // The engine lock serialises writers; other writers cannot bump
+        // versions between validation and apply because they too must
+        // acquire the engine lock before touching collections.
+        let mut engine = self.inner.lock_engine();
+
+        // Phase 1: validate read set under a brief read lock.
+        {
+            let collections = self.inner.read_collections();
+            for ((coll, id), expected) in &self.read_set {
+                let current = collections
+                    .get(coll)
+                    .and_then(|s| s.versions.get(id).copied())
+                    .unwrap_or(0);
+                if current != *expected {
+                    return Err(DatabaseError::Transaction(TransactionError::Conflict {
+                        doc_id: *id,
+                        read_version: *expected,
+                        current_version: current,
+                    }));
+                }
             }
         }
 
-        // Phase 2: collect events to emit after the lock is released.
+        // Phase 2: durable I/O — collections lock NOT held, so readers
+        // are never blocked behind fsyncs.
+        for ((coll, id), _, payload) in &writes {
+            engine.put(doc_key(coll, *id), payload.clone())?;
+        }
+        let deletes: Vec<(String, DocId)> = self.delete_set.drain().collect();
+        for (coll, id) in &deletes {
+            engine.delete(doc_key(coll, *id))?;
+        }
+
+        // Phase 3: apply to memory under a brief write lock, collecting
+        // events to emit after all locks are released.
         #[cfg(feature = "async")]
         let mut events: Vec<MutationEvent> = Vec::new();
 
-        // Phase 3: apply writes.
-        for ((coll, id), doc) in self.write_set.drain() {
+        let mut collections = self.inner.write_collections();
+        for ((coll, id), doc, _) in writes {
             let state = collections.entry(coll.clone()).or_default();
             let was_present = state.docs.contains_key(&id);
             let version = state.next_version;
             state.next_version += 1;
             state.next_doc_id = state.next_doc_id.max(id.0 + 1);
-
-            engine.put(doc_key(&coll, id), serialize_doc(&doc)?)?;
             state.docs.insert(id, doc);
             state.versions.insert(id, version);
 
@@ -570,8 +614,7 @@ impl DbTransaction {
             let _ = was_present;
         }
 
-        // Phase 4: apply deletes.
-        for (coll, id) in self.delete_set.drain() {
+        for (coll, id) in deletes {
             let removed = collections
                 .get_mut(&coll)
                 .map(|s| {
@@ -580,7 +623,6 @@ impl DbTransaction {
                 })
                 .unwrap_or(false);
             if removed {
-                engine.delete(doc_key(&coll, id))?;
                 #[cfg(feature = "async")]
                 events.push(MutationEvent {
                     collection: coll,
@@ -591,8 +633,8 @@ impl DbTransaction {
             }
         }
 
-        drop(engine);
         drop(collections);
+        drop(engine);
 
         #[cfg(feature = "async")]
         for event in events {
@@ -635,7 +677,7 @@ impl VersionedStore for Database {
         // the caller pre-filters to a single collection. We pick the first
         // collection that contains the id — fine for tests; FFI uses
         // `DbTransaction` directly.
-        let collections = self.inner.collections.read().expect("collections poisoned");
+        let collections = self.inner.read_collections();
         for state in collections.values() {
             if let Some(doc) = state.docs.get(&id) {
                 return Some(VersionedDocument {
@@ -648,7 +690,7 @@ impl VersionedStore for Database {
     }
 
     fn current_version(&self, id: DocId) -> Option<u64> {
-        let collections = self.inner.collections.read().expect("collections poisoned");
+        let collections = self.inner.read_collections();
         for state in collections.values() {
             if let Some(v) = state.versions.get(&id) {
                 return Some(*v);

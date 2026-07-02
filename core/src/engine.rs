@@ -342,7 +342,7 @@ impl StorageEngine {
     ) -> Result<Option<Arc<SSTableReader>>, StorageError> {
         // Fast path: already cached.
         {
-            let cache = self.reader_cache.lock().expect("reader cache poisoned");
+            let cache = self.reader_cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(r) = cache.get(&id) {
                 return Ok(Some(Arc::clone(r)));
             }
@@ -356,7 +356,7 @@ impl StorageEngine {
             return Ok(None);
         }
         let reader = Arc::new(SSTableReader::open(&path)?);
-        let mut cache = self.reader_cache.lock().expect("reader cache poisoned");
+        let mut cache = self.reader_cache.lock().unwrap_or_else(|e| e.into_inner());
         let entry = cache.entry(id).or_insert_with(|| Arc::clone(&reader));
         Ok(Some(Arc::clone(entry)))
     }
@@ -365,9 +365,10 @@ impl StorageEngine {
     /// compaction. Outstanding `Arc`s held by in-flight `get`s remain
     /// valid until those calls complete.
     fn evict_reader(&self, id: TableId) {
-        if let Ok(mut cache) = self.reader_cache.lock() {
-            cache.remove(&id);
-        }
+        self.reader_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
     }
 
     /// Delete a key by writing a tombstone.
