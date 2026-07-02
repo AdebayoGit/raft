@@ -160,6 +160,9 @@ impl Manifest {
         let encoded = record.encode();
         self.file.write_all(&encoded)?;
         self.file.flush()?;
+        // Manifest records decide which SSTables are live — losing one after
+        // a crash orphans or resurrects tables. fsync every record.
+        self.file.sync_all()?;
         Ok(())
     }
 
