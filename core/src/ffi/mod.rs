@@ -74,6 +74,20 @@ use crate::database::Database;
 /// - `out_err` must be a valid pointer to an `RftError`.
 #[no_mangle]
 pub unsafe extern "C" fn rft_open(path: *const c_char, out_err: *mut RftError) -> *mut RaftDb {
+    guard_or(ptr::null_mut(), || {
+        if !out_err.is_null() {
+            // Pre-set the panic code so a panic later in the body still
+            // reports a meaningful error alongside the null return.
+            unsafe { ptr::write(out_err, RftError::InternalPanic) };
+        }
+        unsafe { rft_open_impl(path, out_err) }
+    })
+}
+
+/// # Safety
+///
+/// Same contract as [`rft_open`].
+unsafe fn rft_open_impl(path: *const c_char, out_err: *mut RftError) -> *mut RaftDb {
     if path.is_null() {
         if !out_err.is_null() {
             unsafe { ptr::write(out_err, RftError::NullPointer) };
@@ -116,11 +130,13 @@ pub unsafe extern "C" fn rft_open(path: *const c_char, out_err: *mut RftError) -
 /// - After this call, `db` is dangling and must not be used.
 #[no_mangle]
 pub unsafe extern "C" fn rft_close(db: *mut RaftDb) {
-    if !db.is_null() {
-        let handle = unsafe { &*db };
-        observe::abort_all_subscriptions(handle);
-        drop(unsafe { Box::from_raw(db) });
-    }
+    guard_or((), || {
+        if !db.is_null() {
+            let handle = unsafe { &*db };
+            observe::abort_all_subscriptions(handle);
+            drop(unsafe { Box::from_raw(db) });
+        }
+    });
 }
 
 // ── Low-level KV ops (kept for backwards-compat) ───────────────────────
@@ -144,23 +160,25 @@ pub unsafe extern "C" fn rft_put(
     value: *const u8,
     value_len: usize,
 ) -> RftError {
-    let Some(handle) = (unsafe { db.as_ref() }) else {
-        return RftError::NullPointer;
-    };
-    if (key.is_null() && key_len > 0) || (value.is_null() && value_len > 0) {
-        return RftError::NullPointer;
-    }
+    guard(|| {
+        let Some(handle) = (unsafe { db.as_ref() }) else {
+            return RftError::NullPointer;
+        };
+        if (key.is_null() && key_len > 0) || (value.is_null() && value_len > 0) {
+            return RftError::NullPointer;
+        }
 
-    let key_slice = unsafe { slice::from_raw_parts(key, key_len) };
-    let value_slice = unsafe { slice::from_raw_parts(value, value_len) };
+        let key_slice = unsafe { slice::from_raw_parts(key, key_len) };
+        let value_slice = unsafe { slice::from_raw_parts(value, value_len) };
 
-    match handle
-        .database()
-        .raw_put(key_slice.to_vec(), value_slice.to_vec())
-    {
-        Ok(()) => RftError::Ok,
-        Err(_) => RftError::IoError,
-    }
+        match handle
+            .database()
+            .raw_put(key_slice.to_vec(), value_slice.to_vec())
+        {
+            Ok(()) => RftError::Ok,
+            Err(_) => RftError::IoError,
+        }
+    })
 }
 
 /// Look up a key on the raw engine.
@@ -188,22 +206,24 @@ pub unsafe extern "C" fn rft_get(
     out_value: *mut u8,
     out_len: *mut usize,
 ) -> RftError {
-    let Some(handle) = (unsafe { db.as_ref() }) else {
-        return RftError::NullPointer;
-    };
-    if (key.is_null() && key_len > 0) || out_len.is_null() {
-        return RftError::NullPointer;
-    }
+    guard(|| {
+        let Some(handle) = (unsafe { db.as_ref() }) else {
+            return RftError::NullPointer;
+        };
+        if (key.is_null() && key_len > 0) || out_len.is_null() {
+            return RftError::NullPointer;
+        }
 
-    let key_slice = unsafe { slice::from_raw_parts(key, key_len) };
+        let key_slice = unsafe { slice::from_raw_parts(key, key_len) };
 
-    let value = match handle.database().raw_get(key_slice) {
-        Ok(Some(v)) => v,
-        Ok(None) => return RftError::NotFound,
-        Err(_) => return RftError::IoError,
-    };
+        let value = match handle.database().raw_get(key_slice) {
+            Ok(Some(v)) => v,
+            Ok(None) => return RftError::NotFound,
+            Err(_) => return RftError::IoError,
+        };
 
-    unsafe { write_buffer(&value, out_value, out_len) }
+        unsafe { write_buffer(&value, out_value, out_len) }
+    })
 }
 
 /// Delete a key on the raw engine.
@@ -217,22 +237,37 @@ pub unsafe extern "C" fn rft_get(
 /// - `key` must point to at least `key_len` readable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn rft_delete(db: *mut RaftDb, key: *const u8, key_len: usize) -> RftError {
-    let Some(handle) = (unsafe { db.as_ref() }) else {
-        return RftError::NullPointer;
-    };
-    if key.is_null() && key_len > 0 {
-        return RftError::NullPointer;
-    }
+    guard(|| {
+        let Some(handle) = (unsafe { db.as_ref() }) else {
+            return RftError::NullPointer;
+        };
+        if key.is_null() && key_len > 0 {
+            return RftError::NullPointer;
+        }
 
-    let key_slice = unsafe { slice::from_raw_parts(key, key_len) };
+        let key_slice = unsafe { slice::from_raw_parts(key, key_len) };
 
-    match handle.database().raw_delete(key_slice.to_vec()) {
-        Ok(()) => RftError::Ok,
-        Err(_) => RftError::IoError,
-    }
+        match handle.database().raw_delete(key_slice.to_vec()) {
+            Ok(()) => RftError::Ok,
+            Err(_) => RftError::IoError,
+        }
+    })
 }
 
 // ── Internal helpers ───────────────────────────────────────────────────
+
+/// Run an FFI body, converting any Rust panic into
+/// [`RftError::InternalPanic`] instead of unwinding across the C
+/// boundary (which is undefined behaviour) or aborting the host app.
+pub(crate) fn guard(f: impl FnOnce() -> RftError) -> RftError {
+    guard_or(RftError::InternalPanic, f)
+}
+
+/// Like [`guard`] but for FFI functions that do not return [`RftError`]:
+/// returns `fallback` if the body panics.
+pub(crate) fn guard_or<T>(fallback: T, f: impl FnOnce() -> T) -> T {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(fallback)
+}
 
 /// Standard "write `bytes` into caller buffer, fall back to size query"
 /// pattern shared by all FFI functions that return variable-length data.
@@ -282,6 +317,20 @@ mod tests {
         assert!(!db.is_null(), "rft_open failed: {err:?}");
         assert_eq!(err, RftError::Ok);
         (db, dir)
+    }
+
+    #[test]
+    fn guard_converts_panic_into_error_code() {
+        let code = guard(|| panic!("injected panic"));
+        assert_eq!(code, RftError::InternalPanic);
+    }
+
+    #[test]
+    fn guard_or_returns_fallback_on_panic() {
+        let count = guard_or(0usize, || panic!("injected panic"));
+        assert_eq!(count, 0);
+        let null = guard_or(ptr::null_mut::<RaftDb>(), || panic!("injected panic"));
+        assert!(null.is_null());
     }
 
     #[test]

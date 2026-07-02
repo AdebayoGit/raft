@@ -40,17 +40,19 @@ pub unsafe extern "C" fn rft_transaction_begin(
     db: *mut RaftDb,
     out_txn: *mut *mut RaftTransaction,
 ) -> RftError {
-    let Some(handle) = (unsafe { db.as_ref() }) else {
-        return RftError::NullPointer;
-    };
-    if out_txn.is_null() {
-        return RftError::NullPointer;
-    }
+    super::guard(|| {
+        let Some(handle) = (unsafe { db.as_ref() }) else {
+            return RftError::NullPointer;
+        };
+        if out_txn.is_null() {
+            return RftError::NullPointer;
+        }
 
-    let txn = handle.database().begin_transaction();
-    let boxed = Box::new(RaftTransaction { inner: Some(txn) });
-    unsafe { ptr::write(out_txn, Box::into_raw(boxed)) };
-    RftError::Ok
+        let txn = handle.database().begin_transaction();
+        let boxed = Box::new(RaftTransaction { inner: Some(txn) });
+        unsafe { ptr::write(out_txn, Box::into_raw(boxed)) };
+        RftError::Ok
+    })
 }
 
 /// Read a document inside the transaction. The version is recorded for
@@ -75,30 +77,32 @@ pub unsafe extern "C" fn rft_transaction_get(
     out_buf: *mut u8,
     out_len: *mut usize,
 ) -> RftError {
-    let Some(handle) = (unsafe { txn.as_mut() }) else {
-        return RftError::NullPointer;
-    };
-    let Some(t) = handle.inner.as_mut() else {
-        return RftError::InvalidHandle;
-    };
-    if collection.is_null() || out_len.is_null() {
-        return RftError::NullPointer;
-    }
+    super::guard(|| {
+        let Some(handle) = (unsafe { txn.as_mut() }) else {
+            return RftError::NullPointer;
+        };
+        let Some(t) = handle.inner.as_mut() else {
+            return RftError::InvalidHandle;
+        };
+        if collection.is_null() || out_len.is_null() {
+            return RftError::NullPointer;
+        }
 
-    let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return RftError::InvalidUtf8,
-    };
+        let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return RftError::InvalidUtf8,
+        };
 
-    match t.get(coll, DocId(doc_id)) {
-        Ok(Some(doc)) => match serde_json::to_vec(&doc) {
-            Ok(bytes) => unsafe { write_buffer(&bytes, out_buf, out_len) },
-            Err(_) => RftError::InvalidJson,
-        },
-        Ok(None) => RftError::NotFound,
-        Err(TransactionError::AlreadyFinalised) => RftError::InvalidHandle,
-        Err(_) => RftError::IoError,
-    }
+        match t.get(coll, DocId(doc_id)) {
+            Ok(Some(doc)) => match serde_json::to_vec(&doc) {
+                Ok(bytes) => unsafe { write_buffer(&bytes, out_buf, out_len) },
+                Err(_) => RftError::InvalidJson,
+            },
+            Ok(None) => RftError::NotFound,
+            Err(TransactionError::AlreadyFinalised) => RftError::InvalidHandle,
+            Err(_) => RftError::IoError,
+        }
+    })
 }
 
 /// Buffer a write inside the transaction. Applied atomically on commit.
@@ -115,30 +119,32 @@ pub unsafe extern "C" fn rft_transaction_put(
     doc_json: *const u8,
     doc_json_len: usize,
 ) -> RftError {
-    let Some(handle) = (unsafe { txn.as_mut() }) else {
-        return RftError::NullPointer;
-    };
-    let Some(t) = handle.inner.as_mut() else {
-        return RftError::InvalidHandle;
-    };
-    if collection.is_null() || (doc_json.is_null() && doc_json_len > 0) {
-        return RftError::NullPointer;
-    }
+    super::guard(|| {
+        let Some(handle) = (unsafe { txn.as_mut() }) else {
+            return RftError::NullPointer;
+        };
+        let Some(t) = handle.inner.as_mut() else {
+            return RftError::InvalidHandle;
+        };
+        if collection.is_null() || (doc_json.is_null() && doc_json_len > 0) {
+            return RftError::NullPointer;
+        }
 
-    let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return RftError::InvalidUtf8,
-    };
-    let json = unsafe { slice::from_raw_parts(doc_json, doc_json_len) };
-    let doc: Document = match serde_json::from_slice(json) {
-        Ok(d) => d,
-        Err(_) => return RftError::InvalidJson,
-    };
+        let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return RftError::InvalidUtf8,
+        };
+        let json = unsafe { slice::from_raw_parts(doc_json, doc_json_len) };
+        let doc: Document = match serde_json::from_slice(json) {
+            Ok(d) => d,
+            Err(_) => return RftError::InvalidJson,
+        };
 
-    match t.put(coll, doc) {
-        Ok(()) => RftError::Ok,
-        Err(_) => RftError::InvalidHandle,
-    }
+        match t.put(coll, doc) {
+            Ok(()) => RftError::Ok,
+            Err(_) => RftError::InvalidHandle,
+        }
+    })
 }
 
 /// Buffer a delete inside the transaction.
@@ -153,25 +159,27 @@ pub unsafe extern "C" fn rft_transaction_delete(
     collection: *const c_char,
     doc_id: u64,
 ) -> RftError {
-    let Some(handle) = (unsafe { txn.as_mut() }) else {
-        return RftError::NullPointer;
-    };
-    let Some(t) = handle.inner.as_mut() else {
-        return RftError::InvalidHandle;
-    };
-    if collection.is_null() {
-        return RftError::NullPointer;
-    }
+    super::guard(|| {
+        let Some(handle) = (unsafe { txn.as_mut() }) else {
+            return RftError::NullPointer;
+        };
+        let Some(t) = handle.inner.as_mut() else {
+            return RftError::InvalidHandle;
+        };
+        if collection.is_null() {
+            return RftError::NullPointer;
+        }
 
-    let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return RftError::InvalidUtf8,
-    };
+        let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return RftError::InvalidUtf8,
+        };
 
-    match t.delete(coll, DocId(doc_id)) {
-        Ok(()) => RftError::Ok,
-        Err(_) => RftError::InvalidHandle,
-    }
+        match t.delete(coll, DocId(doc_id)) {
+            Ok(()) => RftError::Ok,
+            Err(_) => RftError::InvalidHandle,
+        }
+    })
 }
 
 /// Validate the read set and atomically apply all buffered changes.
@@ -189,20 +197,22 @@ pub unsafe extern "C" fn rft_transaction_delete(
 ///   freed and dangling.
 #[no_mangle]
 pub unsafe extern "C" fn rft_transaction_commit(txn: *mut RaftTransaction) -> RftError {
-    if txn.is_null() {
-        return RftError::NullPointer;
-    }
-    let mut boxed = unsafe { Box::from_raw(txn) };
-    let Some(inner) = boxed.inner.take() else {
-        return RftError::InvalidHandle;
-    };
-    match inner.commit() {
-        Ok(()) => RftError::Ok,
-        Err(DatabaseError::Transaction(TransactionError::Conflict { .. })) => {
-            RftError::TransactionConflict
+    super::guard(|| {
+        if txn.is_null() {
+            return RftError::NullPointer;
         }
-        Err(_) => RftError::IoError,
-    }
+        let mut boxed = unsafe { Box::from_raw(txn) };
+        let Some(inner) = boxed.inner.take() else {
+            return RftError::InvalidHandle;
+        };
+        match inner.commit() {
+            Ok(()) => RftError::Ok,
+            Err(DatabaseError::Transaction(TransactionError::Conflict { .. })) => {
+                RftError::TransactionConflict
+            }
+            Err(_) => RftError::IoError,
+        }
+    })
 }
 
 /// Discard the transaction without applying any buffered changes.
@@ -215,11 +225,13 @@ pub unsafe extern "C" fn rft_transaction_commit(txn: *mut RaftTransaction) -> Rf
 /// - After this call, `txn` is freed and dangling.
 #[no_mangle]
 pub unsafe extern "C" fn rft_transaction_rollback(txn: *mut RaftTransaction) {
-    if txn.is_null() {
-        return;
-    }
-    let mut boxed = unsafe { Box::from_raw(txn) };
-    if let Some(inner) = boxed.inner.take() {
-        inner.rollback();
-    }
+    super::guard_or((), || {
+        if txn.is_null() {
+            return;
+        }
+        let mut boxed = unsafe { Box::from_raw(txn) };
+        if let Some(inner) = boxed.inner.take() {
+            inner.rollback();
+        }
+    });
 }

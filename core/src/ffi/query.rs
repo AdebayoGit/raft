@@ -92,25 +92,27 @@ pub unsafe extern "C" fn rft_query_execute(
     query_json_len: usize,
     out_result: *mut *mut RaftQueryResult,
 ) -> RftError {
-    let Some(handle) = (unsafe { db.as_ref() }) else {
-        return RftError::NullPointer;
-    };
-    if out_result.is_null() || (query_json.is_null() && query_json_len > 0) {
-        return RftError::NullPointer;
-    }
+    super::guard(|| {
+        let Some(handle) = (unsafe { db.as_ref() }) else {
+            return RftError::NullPointer;
+        };
+        if out_result.is_null() || (query_json.is_null() && query_json_len > 0) {
+            return RftError::NullPointer;
+        }
 
-    let json = unsafe { slice::from_raw_parts(query_json, query_json_len) };
-    let spec: QuerySpec = match serde_json::from_slice(json) {
-        Ok(s) => s,
-        Err(_) => return RftError::InvalidJson,
-    };
+        let json = unsafe { slice::from_raw_parts(query_json, query_json_len) };
+        let spec: QuerySpec = match serde_json::from_slice(json) {
+            Ok(s) => s,
+            Err(_) => return RftError::InvalidJson,
+        };
 
-    let query: Query = spec.into();
-    let docs = handle.database().query(&query);
+        let query: Query = spec.into();
+        let docs = handle.database().query(&query);
 
-    let result = Box::new(RaftQueryResult { docs });
-    unsafe { ptr::write(out_result, Box::into_raw(result)) };
-    RftError::Ok
+        let result = Box::new(RaftQueryResult { docs });
+        unsafe { ptr::write(out_result, Box::into_raw(result)) };
+        RftError::Ok
+    })
 }
 
 /// Number of documents in a query result. Returns 0 for null handles.
@@ -120,10 +122,12 @@ pub unsafe extern "C" fn rft_query_execute(
 /// - `result` must be a handle returned by [`rft_query_execute`], or null.
 #[no_mangle]
 pub unsafe extern "C" fn rft_query_result_count(result: *const RaftQueryResult) -> usize {
-    if result.is_null() {
-        return 0;
-    }
-    unsafe { (*result).docs.len() }
+    super::guard_or(0, || {
+        if result.is_null() {
+            return 0;
+        }
+        unsafe { (*result).docs.len() }
+    })
 }
 
 /// Fetch the JSON encoding of the document at `index` in the result set.
@@ -142,20 +146,22 @@ pub unsafe extern "C" fn rft_query_result_get(
     out_buf: *mut u8,
     out_len: *mut usize,
 ) -> RftError {
-    if result.is_null() || out_len.is_null() {
-        return RftError::NullPointer;
-    }
-    let docs = unsafe { &(*result).docs };
-    let Some(doc) = docs.get(index) else {
-        return RftError::NotFound;
-    };
+    super::guard(|| {
+        if result.is_null() || out_len.is_null() {
+            return RftError::NullPointer;
+        }
+        let docs = unsafe { &(*result).docs };
+        let Some(doc) = docs.get(index) else {
+            return RftError::NotFound;
+        };
 
-    let bytes = match serde_json::to_vec(doc) {
-        Ok(b) => b,
-        Err(_) => return RftError::InvalidJson,
-    };
+        let bytes = match serde_json::to_vec(doc) {
+            Ok(b) => b,
+            Err(_) => return RftError::InvalidJson,
+        };
 
-    unsafe { write_buffer(&bytes, out_buf, out_len) }
+        unsafe { write_buffer(&bytes, out_buf, out_len) }
+    })
 }
 
 /// Free a query result handle. Safe to call with null (no-op).
@@ -166,9 +172,11 @@ pub unsafe extern "C" fn rft_query_result_get(
 /// - After this call, `result` is dangling and must not be reused.
 #[no_mangle]
 pub unsafe extern "C" fn rft_query_result_free(result: *mut RaftQueryResult) {
-    if !result.is_null() {
-        drop(unsafe { Box::from_raw(result) });
-    }
+    super::guard_or((), || {
+        if !result.is_null() {
+            drop(unsafe { Box::from_raw(result) });
+        }
+    });
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────

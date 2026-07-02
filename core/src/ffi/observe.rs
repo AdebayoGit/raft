@@ -100,66 +100,71 @@ pub unsafe extern "C" fn rft_observe(
     user_data: *mut c_void,
     out_sub_id: *mut u64,
 ) -> RftError {
-    let Some(handle) = (unsafe { db.as_ref() }) else {
-        return RftError::NullPointer;
-    };
-    if collection.is_null() || out_sub_id.is_null() {
-        return RftError::NullPointer;
-    }
+    super::guard(|| {
+        let Some(handle) = (unsafe { db.as_ref() }) else {
+            return RftError::NullPointer;
+        };
+        if collection.is_null() || out_sub_id.is_null() {
+            return RftError::NullPointer;
+        }
 
-    let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
-        Ok(s) => s.to_string(),
-        Err(_) => return RftError::InvalidUtf8,
-    };
+        let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => return RftError::InvalidUtf8,
+        };
 
-    let mut rx = handle.database().subscribe();
-    let wrapped_user_data = UserData::new(user_data);
+        let mut rx = handle.database().subscribe();
+        let wrapped_user_data = UserData::new(user_data);
 
-    let join_handle = handle.runtime().spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    if event.collection != coll {
+        let join_handle = handle.runtime().spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        if event.collection != coll {
+                            continue;
+                        }
+                        let json = match serde_json::to_string(&event) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+                        let cstring = match CString::new(json) {
+                            Ok(c) => c,
+                            Err(_) => continue,
+                        };
+                        // SAFETY: callback is a C function pointer the caller
+                        // promised remains valid for the subscription
+                        // lifetime; user_data is opaque and managed by the
+                        // caller.
+                        unsafe {
+                            callback(cstring.as_ptr(), wrapped_user_data.as_ptr());
+                        }
+                    }
+                    Err(RecvError::Lagged(_)) => {
+                        // Skip silently — the subscriber missed events but
+                        // can keep going. Platform bindings can re-query if
+                        // they need a precise re-sync.
                         continue;
                     }
-                    let json = match serde_json::to_string(&event) {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
-                    let cstring = match CString::new(json) {
-                        Ok(c) => c,
-                        Err(_) => continue,
-                    };
-                    // SAFETY: callback is a C function pointer the caller
-                    // promised remains valid for the subscription
-                    // lifetime; user_data is opaque and managed by the
-                    // caller.
-                    unsafe {
-                        callback(cstring.as_ptr(), wrapped_user_data.as_ptr());
-                    }
+                    Err(RecvError::Closed) => break,
                 }
-                Err(RecvError::Lagged(_)) => {
-                    // Skip silently — the subscriber missed events but
-                    // can keep going. Platform bindings can re-query if
-                    // they need a precise re-sync.
-                    continue;
-                }
-                Err(RecvError::Closed) => break,
             }
-        }
-    });
+        });
 
-    let sub_id = {
-        let mut reg = handle.subscriptions.lock().expect("subscriptions poisoned");
-        reg.next_id += 1;
-        let id = reg.next_id;
-        reg.handles.insert(id, join_handle);
-        id
-    };
+        let sub_id = {
+            let mut reg = handle
+                .subscriptions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.next_id += 1;
+            let id = reg.next_id;
+            reg.handles.insert(id, join_handle);
+            id
+        };
 
-    GLOBAL_OBSERVER_COUNT.fetch_add(1, Ordering::Relaxed);
-    unsafe { ptr::write(out_sub_id, sub_id) };
-    RftError::Ok
+        GLOBAL_OBSERVER_COUNT.fetch_add(1, Ordering::Relaxed);
+        unsafe { ptr::write(out_sub_id, sub_id) };
+        RftError::Ok
+    })
 }
 
 /// Register a *live query* subscription for `query_json`. The callback
@@ -195,53 +200,58 @@ pub unsafe extern "C" fn rft_observe_query(
     user_data: *mut c_void,
     out_sub_id: *mut u64,
 ) -> RftError {
-    let Some(handle) = (unsafe { db.as_ref() }) else {
-        return RftError::NullPointer;
-    };
-    if out_sub_id.is_null() || (query_json.is_null() && query_json_len > 0) {
-        return RftError::NullPointer;
-    }
-
-    let json = unsafe { slice::from_raw_parts(query_json, query_json_len) };
-    let query: Query = match query_from_json(json) {
-        Ok(q) => q,
-        Err(_) => return RftError::InvalidJson,
-    };
-
-    // Atomically (subscribe → snapshot) so we don't drop any mutations
-    // between the snapshot and the first diff.
-    let (initial, mut live) = handle.database().live_query(query);
-
-    // Emit the initial snapshot synchronously so callers always see the
-    // current state before the task starts. This matches the platform
-    // bindings' `observe(...)` semantics on Kotlin/Swift/Dart.
-    let snapshot = QueryDiff {
-        added: initial,
-        removed: Vec::new(),
-        updated: Vec::new(),
-    };
-    let wrapped_user_data = UserData::new(user_data);
-    if let Err(err) = fire_diff(&snapshot, callback, wrapped_user_data.as_ptr()) {
-        return err;
-    }
-
-    let join_handle = handle.runtime().spawn(async move {
-        while let Some(diff) = live.next_diff().await {
-            let _ = fire_diff(&diff, callback, wrapped_user_data.as_ptr());
+    super::guard(|| {
+        let Some(handle) = (unsafe { db.as_ref() }) else {
+            return RftError::NullPointer;
+        };
+        if out_sub_id.is_null() || (query_json.is_null() && query_json_len > 0) {
+            return RftError::NullPointer;
         }
-    });
 
-    let sub_id = {
-        let mut reg = handle.subscriptions.lock().expect("subscriptions poisoned");
-        reg.next_id += 1;
-        let id = reg.next_id;
-        reg.handles.insert(id, join_handle);
-        id
-    };
+        let json = unsafe { slice::from_raw_parts(query_json, query_json_len) };
+        let query: Query = match query_from_json(json) {
+            Ok(q) => q,
+            Err(_) => return RftError::InvalidJson,
+        };
 
-    GLOBAL_OBSERVER_COUNT.fetch_add(1, Ordering::Relaxed);
-    unsafe { ptr::write(out_sub_id, sub_id) };
-    RftError::Ok
+        // Atomically (subscribe → snapshot) so we don't drop any mutations
+        // between the snapshot and the first diff.
+        let (initial, mut live) = handle.database().live_query(query);
+
+        // Emit the initial snapshot synchronously so callers always see the
+        // current state before the task starts. This matches the platform
+        // bindings' `observe(...)` semantics on Kotlin/Swift/Dart.
+        let snapshot = QueryDiff {
+            added: initial,
+            removed: Vec::new(),
+            updated: Vec::new(),
+        };
+        let wrapped_user_data = UserData::new(user_data);
+        if let Err(err) = fire_diff(&snapshot, callback, wrapped_user_data.as_ptr()) {
+            return err;
+        }
+
+        let join_handle = handle.runtime().spawn(async move {
+            while let Some(diff) = live.next_diff().await {
+                let _ = fire_diff(&diff, callback, wrapped_user_data.as_ptr());
+            }
+        });
+
+        let sub_id = {
+            let mut reg = handle
+                .subscriptions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.next_id += 1;
+            let id = reg.next_id;
+            reg.handles.insert(id, join_handle);
+            id
+        };
+
+        GLOBAL_OBSERVER_COUNT.fetch_add(1, Ordering::Relaxed);
+        unsafe { ptr::write(out_sub_id, sub_id) };
+        RftError::Ok
+    })
 }
 
 /// Encode `diff` as JSON and invoke `callback` with the resulting C string.
@@ -276,22 +286,27 @@ fn fire_diff(
 /// - `db` must be a valid handle.
 #[no_mangle]
 pub unsafe extern "C" fn rft_unobserve(db: *mut RaftDb, sub_id: u64) -> RftError {
-    let Some(handle) = (unsafe { db.as_ref() }) else {
-        return RftError::NullPointer;
-    };
+    super::guard(|| {
+        let Some(handle) = (unsafe { db.as_ref() }) else {
+            return RftError::NullPointer;
+        };
 
-    let join = {
-        let mut reg = handle.subscriptions.lock().expect("subscriptions poisoned");
-        reg.handles.remove(&sub_id)
-    };
+        let join = {
+            let mut reg = handle
+                .subscriptions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.handles.remove(&sub_id)
+        };
 
-    match join {
-        Some(j) => {
-            j.abort();
-            RftError::Ok
+        match join {
+            Some(j) => {
+                j.abort();
+                RftError::Ok
+            }
+            None => RftError::UnknownSubscription,
         }
-        None => RftError::UnknownSubscription,
-    }
+    })
 }
 
 /// Used by [`rft_close`] to abort all pending subscriptions before
@@ -299,7 +314,7 @@ pub unsafe extern "C" fn rft_unobserve(db: *mut RaftDb, sub_id: u64) -> RftError
 /// the database and panic on access.
 pub(super) fn abort_all_subscriptions(db: &RaftDb) {
     let handles: Vec<JoinHandle<()>> = {
-        let mut reg = db.subscriptions.lock().expect("subscriptions poisoned");
+        let mut reg = db.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
         reg.handles.drain().map(|(_, j)| j).collect()
     };
     for j in handles {

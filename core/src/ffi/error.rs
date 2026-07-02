@@ -31,4 +31,8 @@ pub enum RftError {
     /// A subscription id passed to [`rft_unobserve`](super::rft_unobserve)
     /// is not registered.
     UnknownSubscription = 9,
+    /// An internal panic was caught at the FFI boundary. The database
+    /// may be in an inconsistent in-memory state; the caller should
+    /// close and reopen the handle.
+    InternalPanic = 10,
 }

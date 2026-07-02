@@ -39,27 +39,29 @@ pub unsafe extern "C" fn rft_collection_put(
     doc_json: *const u8,
     doc_json_len: usize,
 ) -> RftError {
-    let Some(handle) = (unsafe { db.as_ref() }) else {
-        return RftError::NullPointer;
-    };
-    if collection.is_null() || (doc_json.is_null() && doc_json_len > 0) {
-        return RftError::NullPointer;
-    }
+    super::guard(|| {
+        let Some(handle) = (unsafe { db.as_ref() }) else {
+            return RftError::NullPointer;
+        };
+        if collection.is_null() || (doc_json.is_null() && doc_json_len > 0) {
+            return RftError::NullPointer;
+        }
 
-    let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return RftError::InvalidUtf8,
-    };
-    let json = unsafe { slice::from_raw_parts(doc_json, doc_json_len) };
-    let doc: Document = match serde_json::from_slice(json) {
-        Ok(d) => d,
-        Err(_) => return RftError::InvalidJson,
-    };
+        let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return RftError::InvalidUtf8,
+        };
+        let json = unsafe { slice::from_raw_parts(doc_json, doc_json_len) };
+        let doc: Document = match serde_json::from_slice(json) {
+            Ok(d) => d,
+            Err(_) => return RftError::InvalidJson,
+        };
 
-    match handle.database().put(coll, doc) {
-        Ok(_) => RftError::Ok,
-        Err(_) => RftError::IoError,
-    }
+        match handle.database().put(coll, doc) {
+            Ok(_) => RftError::Ok,
+            Err(_) => RftError::IoError,
+        }
+    })
 }
 
 /// Insert a document, letting the database assign a fresh id. Writes the
@@ -77,30 +79,33 @@ pub unsafe extern "C" fn rft_collection_put_auto(
     doc_json_len: usize,
     out_doc_id: *mut u64,
 ) -> RftError {
-    let Some(handle) = (unsafe { db.as_ref() }) else {
-        return RftError::NullPointer;
-    };
-    if collection.is_null() || out_doc_id.is_null() || (doc_json.is_null() && doc_json_len > 0) {
-        return RftError::NullPointer;
-    }
-
-    let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return RftError::InvalidUtf8,
-    };
-    let json = unsafe { slice::from_raw_parts(doc_json, doc_json_len) };
-    let doc: Document = match serde_json::from_slice(json) {
-        Ok(d) => d,
-        Err(_) => return RftError::InvalidJson,
-    };
-
-    match handle.database().put_auto(coll, doc) {
-        Ok(id) => {
-            unsafe { ptr::write(out_doc_id, id.0) };
-            RftError::Ok
+    super::guard(|| {
+        let Some(handle) = (unsafe { db.as_ref() }) else {
+            return RftError::NullPointer;
+        };
+        if collection.is_null() || out_doc_id.is_null() || (doc_json.is_null() && doc_json_len > 0)
+        {
+            return RftError::NullPointer;
         }
-        Err(_) => RftError::IoError,
-    }
+
+        let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return RftError::InvalidUtf8,
+        };
+        let json = unsafe { slice::from_raw_parts(doc_json, doc_json_len) };
+        let doc: Document = match serde_json::from_slice(json) {
+            Ok(d) => d,
+            Err(_) => return RftError::InvalidJson,
+        };
+
+        match handle.database().put_auto(coll, doc) {
+            Ok(id) => {
+                unsafe { ptr::write(out_doc_id, id.0) };
+                RftError::Ok
+            }
+            Err(_) => RftError::IoError,
+        }
+    })
 }
 
 /// Fetch a document by id, writing its JSON encoding to `out_buf`. On
@@ -122,28 +127,30 @@ pub unsafe extern "C" fn rft_collection_get(
     out_buf: *mut u8,
     out_len: *mut usize,
 ) -> RftError {
-    let Some(handle) = (unsafe { db.as_ref() }) else {
-        return RftError::NullPointer;
-    };
-    if collection.is_null() || out_len.is_null() {
-        return RftError::NullPointer;
-    }
+    super::guard(|| {
+        let Some(handle) = (unsafe { db.as_ref() }) else {
+            return RftError::NullPointer;
+        };
+        if collection.is_null() || out_len.is_null() {
+            return RftError::NullPointer;
+        }
 
-    let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return RftError::InvalidUtf8,
-    };
+        let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return RftError::InvalidUtf8,
+        };
 
-    let Some(doc) = handle.database().get(coll, DocId(doc_id)) else {
-        return RftError::NotFound;
-    };
+        let Some(doc) = handle.database().get(coll, DocId(doc_id)) else {
+            return RftError::NotFound;
+        };
 
-    let bytes = match serde_json::to_vec(&doc) {
-        Ok(b) => b,
-        Err(_) => return RftError::InvalidJson,
-    };
+        let bytes = match serde_json::to_vec(&doc) {
+            Ok(b) => b,
+            Err(_) => return RftError::InvalidJson,
+        };
 
-    unsafe { write_buffer(&bytes, out_buf, out_len) }
+        unsafe { write_buffer(&bytes, out_buf, out_len) }
+    })
 }
 
 /// Delete a document. Returns [`RftError::Ok`] whether the document
@@ -159,22 +166,24 @@ pub unsafe extern "C" fn rft_collection_delete(
     collection: *const c_char,
     doc_id: u64,
 ) -> RftError {
-    let Some(handle) = (unsafe { db.as_ref() }) else {
-        return RftError::NullPointer;
-    };
-    if collection.is_null() {
-        return RftError::NullPointer;
-    }
+    super::guard(|| {
+        let Some(handle) = (unsafe { db.as_ref() }) else {
+            return RftError::NullPointer;
+        };
+        if collection.is_null() {
+            return RftError::NullPointer;
+        }
 
-    let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return RftError::InvalidUtf8,
-    };
+        let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return RftError::InvalidUtf8,
+        };
 
-    match handle.database().delete(coll, DocId(doc_id)) {
-        Ok(_) => RftError::Ok,
-        Err(_) => RftError::IoError,
-    }
+        match handle.database().delete(coll, DocId(doc_id)) {
+            Ok(_) => RftError::Ok,
+            Err(_) => RftError::IoError,
+        }
+    })
 }
 
 /// Number of documents in `collection`. Writes the count to `*out_count`.
@@ -190,20 +199,22 @@ pub unsafe extern "C" fn rft_collection_count(
     collection: *const c_char,
     out_count: *mut usize,
 ) -> RftError {
-    let Some(handle) = (unsafe { db.as_ref() }) else {
-        return RftError::NullPointer;
-    };
-    if collection.is_null() || out_count.is_null() {
-        return RftError::NullPointer;
-    }
+    super::guard(|| {
+        let Some(handle) = (unsafe { db.as_ref() }) else {
+            return RftError::NullPointer;
+        };
+        if collection.is_null() || out_count.is_null() {
+            return RftError::NullPointer;
+        }
 
-    let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return RftError::InvalidUtf8,
-    };
+        let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return RftError::InvalidUtf8,
+        };
 
-    unsafe { ptr::write(out_count, handle.database().count(coll)) };
-    RftError::Ok
+        unsafe { ptr::write(out_count, handle.database().count(coll)) };
+        RftError::Ok
+    })
 }
 
 /// List all document ids in `collection`, sorted ascending.
@@ -226,30 +237,32 @@ pub unsafe extern "C" fn rft_collection_list_ids(
     out_ids: *mut u64,
     out_len: *mut usize,
 ) -> RftError {
-    let Some(handle) = (unsafe { db.as_ref() }) else {
-        return RftError::NullPointer;
-    };
-    if collection.is_null() || out_len.is_null() {
-        return RftError::NullPointer;
-    }
+    super::guard(|| {
+        let Some(handle) = (unsafe { db.as_ref() }) else {
+            return RftError::NullPointer;
+        };
+        if collection.is_null() || out_len.is_null() {
+            return RftError::NullPointer;
+        }
 
-    let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return RftError::InvalidUtf8,
-    };
+        let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return RftError::InvalidUtf8,
+        };
 
-    let ids = handle.database().list_ids(coll);
-    let required = ids.len();
-    let capacity = unsafe { ptr::read(out_len) };
+        let ids = handle.database().list_ids(coll);
+        let required = ids.len();
+        let capacity = unsafe { ptr::read(out_len) };
 
-    if out_ids.is_null() || capacity < required {
+        if out_ids.is_null() || capacity < required {
+            unsafe { ptr::write(out_len, required) };
+            return RftError::BufferTooSmall;
+        }
+
+        for (i, id) in ids.iter().enumerate() {
+            unsafe { ptr::write(out_ids.add(i), id.0) };
+        }
         unsafe { ptr::write(out_len, required) };
-        return RftError::BufferTooSmall;
-    }
-
-    for (i, id) in ids.iter().enumerate() {
-        unsafe { ptr::write(out_ids.add(i), id.0) };
-    }
-    unsafe { ptr::write(out_len, required) };
-    RftError::Ok
+        RftError::Ok
+    })
 }
