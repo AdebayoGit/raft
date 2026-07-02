@@ -205,7 +205,17 @@ impl StorageEngine {
         // prefix and truncates the damage.
         let mut memtable = MemTable::new(config.memtable_size);
         let (entries, _stats) = wal.recover()?;
+
+        // Seed the HLC from the newest recovered entry so timestamps stay
+        // monotonic across restarts even if the wall clock went backwards
+        // while the process was down.
+        let mut hlc_physical: u64 = 0;
+        let mut hlc_logical: u16 = 0;
         for entry in entries {
+            if (entry.timestamp.physical, entry.timestamp.logical) > (hlc_physical, hlc_logical) {
+                hlc_physical = entry.timestamp.physical;
+                hlc_logical = entry.timestamp.logical;
+            }
             if let Some(op) = decode_payload(&entry.payload) {
                 match op {
                     WalOp::Put { key, value } => memtable.insert(key, value),
@@ -221,8 +231,8 @@ impl StorageEngine {
             memtable,
             manifest,
             sequence: version.sequence,
-            hlc_logical: 0,
-            hlc_physical: 0,
+            hlc_logical,
+            hlc_physical,
             next_table_id,
             reader_cache: Mutex::new(HashMap::new()),
         })
@@ -575,6 +585,11 @@ impl StorageEngine {
     }
 
     /// Advance the hybrid logical clock.
+    ///
+    /// Timestamps are strictly monotonic even when the wall clock stalls
+    /// or moves backwards: the physical component never regresses, and a
+    /// logical-counter overflow advances the physical component by 1 ms
+    /// instead of wrapping back to zero.
     fn advance_hlc(&mut self) -> HlcTimestamp {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -584,8 +599,14 @@ impl StorageEngine {
         if now_ms > self.hlc_physical {
             self.hlc_physical = now_ms;
             self.hlc_logical = 0;
+        } else if self.hlc_logical == u16::MAX {
+            // Logical counter exhausted within this millisecond — borrow
+            // a millisecond from the physical component rather than
+            // wrapping, which would make timestamps travel backwards.
+            self.hlc_physical += 1;
+            self.hlc_logical = 0;
         } else {
-            self.hlc_logical = self.hlc_logical.wrapping_add(1);
+            self.hlc_logical += 1;
         }
 
         HlcTimestamp::new(self.hlc_physical, self.hlc_logical)
@@ -806,6 +827,63 @@ mod tests {
         let engine = StorageEngine::open(&dir, config).unwrap();
         assert_eq!(engine.get(b"a").unwrap(), Some(b"1".to_vec()));
         assert_eq!(engine.get(b"b").unwrap(), Some(b"2".to_vec()));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hlc_logical_overflow_advances_physical() {
+        let dir = temp_dir("hlc_overflow");
+        let mut engine = StorageEngine::open(&dir, default_config()).unwrap();
+
+        // Pin the clock in the future so now_ms <= hlc_physical, forcing
+        // the logical-increment path; exhaust the logical counter.
+        engine.hlc_physical = u64::MAX - 10;
+        engine.hlc_logical = u16::MAX;
+
+        let ts = engine.advance_hlc();
+        assert_eq!(ts.physical, u64::MAX - 9, "overflow must borrow 1 ms");
+        assert_eq!(ts.logical, 0);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hlc_is_strictly_monotonic_under_stalled_clock() {
+        let dir = temp_dir("hlc_monotonic");
+        let mut engine = StorageEngine::open(&dir, default_config()).unwrap();
+        engine.hlc_physical = u64::MAX - 1_000_000; // clock appears stalled
+
+        let mut last = engine.advance_hlc();
+        for _ in 0..200_000 {
+            let ts = engine.advance_hlc();
+            assert!(
+                (ts.physical, ts.logical) > (last.physical, last.logical),
+                "HLC went backwards: {ts:?} after {last:?}"
+            );
+            last = ts;
+        }
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hlc_seeded_from_wal_on_reopen() {
+        let dir = temp_dir("hlc_reseed");
+        let future = u64::MAX / 2; // far beyond any real wall clock
+
+        {
+            let mut engine = StorageEngine::open(&dir, default_config()).unwrap();
+            engine.hlc_physical = future;
+            engine.put(b"k".to_vec(), b"v".to_vec()).unwrap();
+        }
+
+        // Reopen: the recovered WAL entry carries the future timestamp, so
+        // the HLC must resume at or beyond it — not restart at wall clock.
+        let mut engine = StorageEngine::open(&dir, default_config()).unwrap();
+        assert!(engine.hlc_physical >= future);
+        let ts = engine.advance_hlc();
+        assert!(ts.physical >= future);
 
         fs::remove_dir_all(&dir).ok();
     }
