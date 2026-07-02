@@ -28,6 +28,7 @@ use crate::index::{BTreeIndex, DocId, HashIndex, Index};
 use crate::query::{
     Document, DocumentStore, IndexInfo, IndexKind, IndexSet, Query, QueryExecutor, QueryPlanner,
 };
+use crate::schema::{validate_document, Schema, SchemaViolation};
 use crate::transaction::{TransactionError, VersionedDocument, VersionedStore};
 
 #[cfg(feature = "async")]
@@ -47,12 +48,19 @@ pub enum DatabaseError {
 
     #[error("collection not found: {0}")]
     UnknownCollection(String),
+
+    #[error("schema violation in collection `{collection}`: {violation}")]
+    SchemaViolation {
+        collection: String,
+        violation: SchemaViolation,
+    },
 }
 
 const DOC_PREFIX: &[u8] = b"__doc__/";
 const META_PREFIX: &[u8] = b"__meta__/";
 const ID_COUNTER_SUFFIX: &[u8] = b"/__id_counter";
 const INDEX_SPEC_INFIX: &[u8] = b"/__index__/";
+const SCHEMA_SUFFIX: &[u8] = b"/__schema__";
 
 /// In-memory state for a single collection.
 ///
@@ -138,6 +146,9 @@ impl CollectionState {
 pub(crate) struct DatabaseInner {
     engine: Mutex<StorageEngine>,
     collections: RwLock<HashMap<String, CollectionState>>,
+    /// Registered schemas, keyed by collection name. Writes to a
+    /// collection with a registered schema are validated against it.
+    schemas: RwLock<HashMap<String, Schema>>,
     #[cfg(feature = "async")]
     bus: EventBus,
 }
@@ -161,6 +172,29 @@ impl DatabaseInner {
     ) -> std::sync::RwLockWriteGuard<'_, HashMap<String, CollectionState>> {
         self.collections.write().unwrap_or_else(|e| e.into_inner())
     }
+
+    /// Read-lock the schema registry, recovering from poison.
+    fn read_schemas(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, Schema>> {
+        self.schemas.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Write-lock the schema registry, recovering from poison.
+    fn write_schemas(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, Schema>> {
+        self.schemas.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Validate `doc` against the registered schema for `collection`, if
+    /// any. Collections without a schema accept any document.
+    fn validate_write(&self, collection: &str, doc: &Document) -> Result<(), DatabaseError> {
+        let schemas = self.read_schemas();
+        if let Some(schema) = schemas.get(collection) {
+            validate_document(schema, doc).map_err(|violation| DatabaseError::SchemaViolation {
+                collection: collection.to_string(),
+                violation,
+            })?;
+        }
+        Ok(())
+    }
 }
 
 /// High-level embedded database: collections of typed documents on top of
@@ -183,15 +217,45 @@ impl Database {
     ) -> Result<Self, DatabaseError> {
         let engine = StorageEngine::open(path, config)?;
         let collections = Self::scan_collections(&engine)?;
+        let schemas = Self::scan_schemas(&engine)?;
 
         Ok(Self {
             inner: Arc::new(DatabaseInner {
                 engine: Mutex::new(engine),
                 collections: RwLock::new(collections),
+                schemas: RwLock::new(schemas),
                 #[cfg(feature = "async")]
                 bus: EventBus::new(),
             }),
         })
+    }
+
+    // ── Schema ──────────────────────────────────────────────────────────
+
+    /// Register `schema` for its collection. Once registered, every write
+    /// to that collection (via [`put`](Self::put), [`put_auto`](Self::put_auto),
+    /// or a transactional commit) is validated: unknown fields, wrong
+    /// types, and missing required fields are rejected with
+    /// [`DatabaseError::SchemaViolation`].
+    ///
+    /// The schema is persisted and rehydrated on reopen. Re-registering
+    /// replaces the previous schema for the collection.
+    pub fn register_schema(&self, schema: Schema) -> Result<(), DatabaseError> {
+        let payload =
+            serde_json::to_vec(&schema).map_err(|e| DatabaseError::Decode(e.to_string()))?;
+        let mut engine = self.inner.lock_engine();
+        engine.put(schema_key(schema.name()), payload)?;
+        drop(engine);
+
+        self.inner
+            .write_schemas()
+            .insert(schema.name().to_string(), schema);
+        Ok(())
+    }
+
+    /// The registered schema for `collection`, if any.
+    pub fn schema(&self, collection: &str) -> Option<Schema> {
+        self.inner.read_schemas().get(collection).cloned()
     }
 
     // ── Collection ops ──────────────────────────────────────────────────
@@ -199,6 +263,7 @@ impl Database {
     /// Insert or update a document in `collection`. The doc's [`Document::id`]
     /// is honoured. Returns the new version number.
     pub fn put(&self, collection: &str, doc: Document) -> Result<u64, DatabaseError> {
+        self.inner.validate_write(collection, &doc)?;
         let id = doc.id;
         let key = doc_key(collection, id);
         let payload = serialize_doc(&doc)?;
@@ -571,6 +636,25 @@ impl Database {
 
         Ok(collections)
     }
+
+    /// Rehydrate persisted schemas. Layout: `__meta__/{collection}/__schema__`.
+    fn scan_schemas(engine: &StorageEngine) -> Result<HashMap<String, Schema>, DatabaseError> {
+        let mut schemas = HashMap::new();
+        for (key, value) in engine.scan_prefix(META_PREFIX)? {
+            let rest = &key[META_PREFIX.len()..];
+            if !rest.ends_with(SCHEMA_SUFFIX) {
+                continue;
+            }
+            let Ok(collection) = std::str::from_utf8(&rest[..rest.len() - SCHEMA_SUFFIX.len()])
+            else {
+                continue;
+            };
+            let schema: Schema =
+                serde_json::from_slice(&value).map_err(|e| DatabaseError::Decode(e.to_string()))?;
+            schemas.insert(collection.to_string(), schema);
+        }
+        Ok(schemas)
+    }
 }
 
 /// Wraps the borrowed collection map so the [`QueryExecutor`] can scan it.
@@ -731,11 +815,12 @@ impl DbTransaction {
         self.ensure_active()?;
         self.state = TxnState::Finalised;
 
-        // Phase 0: serialize all writes up front so an encoding error
-        // aborts the commit before any durable I/O happens.
+        // Phase 0: validate against registered schemas and serialize all
+        // writes up front so any error aborts the commit before durable I/O.
         let mut writes: Vec<((String, DocId), Document, Vec<u8>)> =
             Vec::with_capacity(self.write_set.len());
         for ((coll, id), doc) in self.write_set.drain() {
+            self.inner.validate_write(&coll, &doc)?;
             let payload = serialize_doc(&doc)?;
             writes.push(((coll, id), doc, payload));
         }
@@ -933,6 +1018,15 @@ fn index_spec_key(collection: &str, field: &str) -> Vec<u8> {
     k.extend_from_slice(collection.as_bytes());
     k.extend_from_slice(INDEX_SPEC_INFIX);
     k.extend_from_slice(field.as_bytes());
+    k
+}
+
+/// Key of the persisted schema: `__meta__/{collection}/__schema__`.
+fn schema_key(collection: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(META_PREFIX.len() + collection.len() + SCHEMA_SUFFIX.len());
+    k.extend_from_slice(META_PREFIX);
+    k.extend_from_slice(collection.as_bytes());
+    k.extend_from_slice(SCHEMA_SUFFIX);
     k
 }
 
@@ -1408,6 +1502,126 @@ mod tests {
         let event = rx.recv().await.unwrap();
         assert_eq!(event.mutation_type, MutationType::Delete);
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── Schema enforcement ──
+
+    fn users_schema() -> crate::schema::Schema {
+        crate::schema::Schema::builder("users")
+            .required_field("name", crate::schema::FieldType::String)
+            .field("age", crate::schema::FieldType::Int)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn schema_rejects_unknown_field() {
+        let dir = temp_dir("schema_unknown_field");
+        let db = Database::open(&dir).unwrap();
+        db.register_schema(users_schema()).unwrap();
+
+        let doc = user(1, "Alice", 30).with_field("nickname", Value::String("Al".into()));
+        let err = db.put("users", doc).unwrap_err();
+        assert!(matches!(
+            err,
+            DatabaseError::SchemaViolation {
+                violation: crate::schema::SchemaViolation::UnknownField { .. },
+                ..
+            }
+        ));
+        assert_eq!(db.count("users"), 0, "rejected write must not persist");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn schema_rejects_wrong_type() {
+        let dir = temp_dir("schema_wrong_type");
+        let db = Database::open(&dir).unwrap();
+        db.register_schema(users_schema()).unwrap();
+
+        let doc = Document::new(DocId(1))
+            .with_field("name", Value::String("Alice".into()))
+            .with_field("age", Value::String("thirty".into()));
+        let err = db.put("users", doc).unwrap_err();
+        assert!(matches!(
+            err,
+            DatabaseError::SchemaViolation {
+                violation: crate::schema::SchemaViolation::TypeMismatch { .. },
+                ..
+            }
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn schema_rejects_missing_required_field() {
+        let dir = temp_dir("schema_missing_required");
+        let db = Database::open(&dir).unwrap();
+        db.register_schema(users_schema()).unwrap();
+
+        let doc = Document::new(DocId(1)).with_field("age", Value::Int(30));
+        let err = db.put("users", doc).unwrap_err();
+        assert!(matches!(
+            err,
+            DatabaseError::SchemaViolation {
+                violation: crate::schema::SchemaViolation::MissingRequiredField { .. },
+                ..
+            }
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn schema_accepts_valid_write_and_leaves_other_collections_open() {
+        let dir = temp_dir("schema_valid_write");
+        let db = Database::open(&dir).unwrap();
+        db.register_schema(users_schema()).unwrap();
+
+        db.put("users", user(1, "Alice", 30)).unwrap();
+        assert_eq!(db.count("users"), 1);
+
+        // Collections without a registered schema accept anything.
+        let free = Document::new(DocId(1)).with_field("whatever", Value::Bool(true));
+        db.put("scratch", free).unwrap();
+        assert_eq!(db.count("scratch"), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn transaction_commit_rejects_schema_violation() {
+        let dir = temp_dir("schema_txn_reject");
+        let db = Database::open(&dir).unwrap();
+        db.register_schema(users_schema()).unwrap();
+
+        let mut txn = db.begin_transaction();
+        txn.put("users", user(1, "Alice", 30)).unwrap();
+        txn.put("users", user(2, "Bob", 40).with_field("extra", Value::Null))
+            .unwrap();
+        let err = txn.commit().unwrap_err();
+        assert!(matches!(err, DatabaseError::SchemaViolation { .. }));
+        // The whole batch must be rejected — nothing applied.
+        assert_eq!(db.count("users"), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn schema_survives_reopen() {
+        let dir = temp_dir("schema_reopen");
+        {
+            let db = Database::open(&dir).unwrap();
+            db.register_schema(users_schema()).unwrap();
+        }
+
+        let db = Database::open(&dir).unwrap();
+        assert_eq!(db.schema("users").unwrap().name(), "users");
+        let err = db
+            .put(
+                "users",
+                Document::new(DocId(1)).with_field("age", Value::Int(1)),
+            )
+            .unwrap_err();
+        assert!(matches!(err, DatabaseError::SchemaViolation { .. }));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

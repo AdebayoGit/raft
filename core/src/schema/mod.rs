@@ -13,12 +13,14 @@ mod builder;
 mod conflict;
 mod error;
 mod field;
+mod validate;
 mod version;
 
 pub use builder::SchemaBuilder;
 pub use conflict::{ConflictStrategy, CrdtKind, CustomResolverId};
 pub use error::SchemaError;
 pub use field::{CrdtHint, FieldDef, FieldType};
+pub use validate::{validate_document, SchemaViolation};
 pub use version::{validate_evolution, EvolutionResult, SchemaVersion};
 
 use serde::{Deserialize, Serialize};
