@@ -51,6 +51,10 @@ pub struct StorageConfig {
     /// WAL durability policy. Default: [`SyncMode::Always`] — every
     /// acknowledged write survives power loss.
     pub wal_sync: SyncMode,
+    /// WAL preallocation chunk in bytes (0 disables). Preallocating keeps
+    /// per-append fsyncs from also journaling file-size updates.
+    /// Default: 1 MiB.
+    pub wal_preallocate: u64,
 }
 
 impl Default for StorageConfig {
@@ -61,6 +65,7 @@ impl Default for StorageConfig {
             compaction: CompactionConfig::default(),
             device_id: 0,
             wal_sync: SyncMode::Always,
+            wal_preallocate: 1024 * 1024,
         }
     }
 }
@@ -190,6 +195,7 @@ impl StorageEngine {
         // Open WAL.
         let wal_path = db_dir.join("wal.log");
         let mut wal = Wal::open_with_mode(&wal_path, config.wal_sync)?;
+        wal.set_preallocate(config.wal_preallocate);
 
         // Create memtable and recover the WAL. A torn tail (partial last
         // write after power loss) is expected — recover() keeps the valid
@@ -584,6 +590,7 @@ mod tests {
             },
             device_id: 0xDEAD,
             wal_sync: SyncMode::Always,
+            wal_preallocate: 1024 * 1024,
         }
     }
 

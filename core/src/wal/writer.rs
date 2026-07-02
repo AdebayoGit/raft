@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use super::entry::WalEntry;
@@ -9,9 +9,10 @@ use super::error::WalError;
 ///
 /// Controls when the WAL fsyncs to durable storage. `Always` is the safe
 /// default: a successful `append` guarantees the entry survives power loss.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SyncMode {
     /// fsync after every append. Maximum durability (default).
+    #[default]
     Always,
     /// fsync after every N appends. Bounded data-loss window of at most
     /// N-1 entries on power loss. `EveryN(0)` behaves like `EveryN(1)`.
@@ -21,28 +22,57 @@ pub enum SyncMode {
     Off,
 }
 
-impl Default for SyncMode {
-    fn default() -> Self {
-        SyncMode::Always
-    }
-}
-
-/// Write-ahead log backed by a single append-only file.
+/// Write-ahead log backed by a single log file with positioned writes.
 ///
 /// All mutations flow through the WAL before reaching the memtable.
-/// On recovery, `replay()` reads every entry back in order.
+/// On recovery, `recover()` reads every entry back in order.
+///
+/// The file may be preallocated in chunks (see [`Wal::set_preallocate`])
+/// so that appends don't force a file-size metadata update on every fsync.
+/// The preallocated tail is zero-filled; an all-zero region is never a
+/// valid entry (its checksum can't be zero), so readers treat it as EOF.
 pub struct Wal {
     path: PathBuf,
-    writer: BufWriter<File>,
+    file: File,
+    /// Logical end of valid data — next append writes here.
+    write_pos: u64,
+    /// Physical file size (>= write_pos when preallocated).
+    capacity: u64,
     sync_mode: SyncMode,
     appends_since_sync: u32,
+    /// Preallocation chunk size in bytes. 0 disables preallocation.
+    preallocate: u64,
+}
+
+/// Returns true if every byte in the slice is zero (preallocated tail).
+fn all_zeros(data: &[u8]) -> bool {
+    data.iter().all(|&b| b == 0)
+}
+
+/// Length of the valid entry prefix in `data`.
+///
+/// Scans entries until EOF, a zero-filled tail, or the first damaged entry.
+fn valid_prefix_len(data: &[u8]) -> usize {
+    let mut pos = 0usize;
+    while pos < data.len() {
+        if all_zeros(&data[pos..]) {
+            break;
+        }
+        let mut cursor = &data[pos..];
+        match WalEntry::decode(&mut cursor, pos as u64) {
+            Ok(Some(_)) => pos = data.len() - cursor.len(),
+            _ => break,
+        }
+    }
+    pos
 }
 
 impl Wal {
     /// Open (or create) a WAL file at `path` with the default
     /// [`SyncMode::Always`] durability policy.
     ///
-    /// The file is opened in append mode — existing data is preserved.
+    /// Existing data is preserved; new appends continue after the last
+    /// valid entry.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, WalError> {
         Self::open_with_mode(path, SyncMode::Always)
     }
@@ -50,14 +80,36 @@ impl Wal {
     /// Open (or create) a WAL file at `path` with an explicit sync mode.
     pub fn open_with_mode(path: impl AsRef<Path>, sync_mode: SyncMode) -> Result<Self, WalError> {
         let path = path.as_ref().to_path_buf();
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        let writer = BufWriter::new(file);
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)?;
+        let write_pos = valid_prefix_len(&data) as u64;
+        let capacity = data.len() as u64;
+
         Ok(Self {
             path,
-            writer,
+            file,
+            write_pos,
+            capacity,
             sync_mode,
             appends_since_sync: 0,
+            preallocate: 0,
         })
+    }
+
+    /// Set the preallocation chunk size in bytes (0 disables).
+    ///
+    /// When enabled, the file is grown in `bytes`-sized chunks ahead of the
+    /// write position so that per-append fsyncs don't also journal a file
+    /// size change.
+    pub fn set_preallocate(&mut self, bytes: u64) {
+        self.preallocate = bytes;
     }
 
     /// Append a single entry to the log, then apply the durability policy.
@@ -66,8 +118,19 @@ impl Wal {
     /// durable storage before this returns.
     pub fn append(&mut self, entry: &WalEntry) -> Result<(), WalError> {
         let encoded = entry.encode_to_vec();
-        self.writer.write_all(&encoded)?;
-        self.writer.flush()?;
+        let end = self.write_pos + encoded.len() as u64;
+
+        // Grow the file ahead of the write position in chunks.
+        if self.preallocate > 0 && end > self.capacity {
+            let new_cap = end.max(self.capacity + self.preallocate);
+            self.file.set_len(new_cap)?;
+            self.capacity = new_cap;
+        }
+
+        self.file.seek(SeekFrom::Start(self.write_pos))?;
+        self.file.write_all(&encoded)?;
+        self.write_pos = end;
+        self.capacity = self.capacity.max(end);
         self.appends_since_sync = self.appends_since_sync.saturating_add(1);
 
         match self.sync_mode {
@@ -115,6 +178,10 @@ impl Wal {
         let mut truncated_at = None;
 
         while pos < data.len() {
+            // A zero-filled tail is preallocated space, not damage.
+            if all_zeros(&data[pos..]) {
+                break;
+            }
             let mut cursor = &data[pos..];
             match WalEntry::decode(&mut cursor, pos as u64) {
                 Ok(Some(entry)) => {
@@ -136,11 +203,11 @@ impl Wal {
         if truncated_at.is_some() {
             // Truncate the file to the valid prefix and fsync so the
             // damaged bytes can never resurface.
-            self.writer.flush()?;
-            let truncate_handle = OpenOptions::new().write(true).open(&self.path)?;
-            truncate_handle.set_len(pos as u64)?;
-            truncate_handle.sync_all()?;
+            self.file.set_len(pos as u64)?;
+            self.file.sync_all()?;
+            self.capacity = pos as u64;
         }
+        self.write_pos = pos as u64;
 
         let stats = RecoveryStats {
             entries_recovered: entries.len(),
@@ -151,8 +218,7 @@ impl Wal {
 
     /// Sync the underlying file to durable storage.
     pub fn sync(&mut self) -> Result<(), WalError> {
-        self.writer.flush()?;
-        self.writer.get_ref().sync_all()?;
+        self.file.sync_all()?;
         self.appends_since_sync = 0;
         Ok(())
     }
@@ -168,13 +234,10 @@ impl Wal {
     /// SSTable. Keeps the same inode (no delete/recreate window where a
     /// crash could leave no WAL at all).
     pub fn reset(&mut self) -> Result<(), WalError> {
-        self.writer.flush()?;
-        let file = OpenOptions::new().write(true).open(&self.path)?;
-        file.set_len(0)?;
-        file.sync_all()?;
-        // Reopen the append writer so its position tracks the new EOF.
-        let file = OpenOptions::new().create(true).append(true).open(&self.path)?;
-        self.writer = BufWriter::new(file);
+        self.file.set_len(0)?;
+        self.file.sync_all()?;
+        self.write_pos = 0;
+        self.capacity = 0;
         self.appends_since_sync = 0;
         Ok(())
     }
@@ -201,6 +264,11 @@ impl Iterator for WalIterator {
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.pos >= self.data.len() {
+            return None;
+        }
+
+        // A zero-filled tail is preallocated space, not data.
+        if all_zeros(&self.data[self.pos..]) {
             return None;
         }
 
@@ -568,6 +636,126 @@ mod tests {
         assert!(entries.is_empty());
         assert_eq!(stats.entries_recovered, 0);
         assert_eq!(stats.truncated_at, None);
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn preallocated_wal_replays_and_recovers() {
+        let path = temp_wal_path("prealloc_basic");
+        let _ = fs::remove_file(&path);
+
+        let entries_in: Vec<WalEntry> = (0..5).map(|i| make_entry(i, 0, b"data")).collect();
+        {
+            let mut wal = Wal::open(&path).unwrap();
+            wal.set_preallocate(64 * 1024);
+            for e in &entries_in {
+                wal.append(e).unwrap();
+            }
+            // File is preallocated well beyond the data written.
+            assert_eq!(fs::metadata(&path).unwrap().len(), 64 * 1024);
+
+            // Strict replay treats the zero tail as EOF.
+            let out: Vec<WalEntry> = wal
+                .replay()
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(out, entries_in);
+        }
+
+        // Reopen: recover must not report the zero tail as damage.
+        let mut wal = Wal::open(&path).unwrap();
+        let (entries, stats) = wal.recover().unwrap();
+        assert_eq!(entries, entries_in);
+        assert_eq!(stats.truncated_at, None);
+
+        // Appends continue after the last valid entry, not at physical EOF.
+        let extra = make_entry(99, 0, b"after-reopen");
+        wal.append(&extra).unwrap();
+        let out: Vec<WalEntry> = wal
+            .replay()
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let mut expected = entries_in.clone();
+        expected.push(extra);
+        assert_eq!(out, expected);
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn preallocation_grows_in_chunks() {
+        let path = temp_wal_path("prealloc_chunks");
+        let _ = fs::remove_file(&path);
+
+        let mut wal = Wal::open(&path).unwrap();
+        wal.set_preallocate(256);
+
+        // One append (< 256 bytes) → one chunk.
+        wal.append(&make_entry(1, 0, b"x")).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), 256);
+
+        // Fill past the first chunk → grows by another chunk.
+        for i in 0..8 {
+            wal.append(&make_entry(2 + i, 0, &[0xAB; 32])).unwrap();
+        }
+        let len = fs::metadata(&path).unwrap().len();
+        assert!(len > 256 && len % 256 == 0, "len = {len}");
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn reset_clears_preallocated_file() {
+        let path = temp_wal_path("prealloc_reset");
+        let _ = fs::remove_file(&path);
+
+        let mut wal = Wal::open(&path).unwrap();
+        wal.set_preallocate(4096);
+        wal.append(&make_entry(1, 0, b"data")).unwrap();
+        wal.reset().unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+
+        let e = make_entry(2, 0, b"fresh");
+        wal.append(&e).unwrap();
+        let out: Vec<WalEntry> = wal
+            .replay()
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(out, vec![e]);
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn recover_truncates_torn_write_inside_preallocated_region() {
+        let path = temp_wal_path("prealloc_torn");
+        let _ = fs::remove_file(&path);
+
+        let e1 = make_entry(1, 0, b"good");
+        {
+            let mut wal = Wal::open(&path).unwrap();
+            wal.set_preallocate(4096);
+            wal.append(&e1).unwrap();
+        }
+
+        // Simulate a torn write: partial entry bytes right after e1,
+        // followed by the remaining zero tail.
+        let torn = make_entry(2, 0, b"torn").encode_to_vec();
+        let valid_len = e1.encoded_size() as u64;
+        let mut data = fs::read(&path).unwrap();
+        let half = torn.len() / 2;
+        data[valid_len as usize..valid_len as usize + half].copy_from_slice(&torn[..half]);
+        fs::write(&path, &data).unwrap();
+
+        let mut wal = Wal::open(&path).unwrap();
+        let (entries, stats) = wal.recover().unwrap();
+        assert_eq!(entries, vec![e1]);
+        assert_eq!(stats.truncated_at, Some(valid_len));
+        assert_eq!(fs::metadata(&path).unwrap().len(), valid_len);
 
         fs::remove_file(&path).ok();
     }
