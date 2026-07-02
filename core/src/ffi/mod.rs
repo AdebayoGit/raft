@@ -121,12 +121,16 @@ unsafe fn rft_open_impl(path: *const c_char, out_err: *mut RftError) -> *mut Raf
     }
 }
 
-/// Close and free a database handle. Aborts any pending observer tasks
-/// before dropping the runtime.
+/// Close and free a database handle. Aborts any pending observer tasks,
+/// then blocks until the observer runtime has fully shut down — after
+/// this returns, no observer callback will ever fire again, so the
+/// caller may safely free any `user_data` it passed to `rft_observe`.
 ///
 /// # Safety
 ///
 /// - `db` must be a handle returned by [`rft_open`], or null (no-op).
+/// - No other thread may be using `db` concurrently with this call.
+/// - Must not be called from inside an observer callback (deadlock).
 /// - After this call, `db` is dangling and must not be used.
 #[no_mangle]
 pub unsafe extern "C" fn rft_close(db: *mut RaftDb) {
@@ -134,7 +138,10 @@ pub unsafe extern "C" fn rft_close(db: *mut RaftDb) {
         if !db.is_null() {
             let handle = unsafe { &*db };
             observe::abort_all_subscriptions(handle);
-            drop(unsafe { Box::from_raw(db) });
+            // Blocks until all observer tasks have drained, then frees
+            // the database. Prevents use-after-free between a late
+            // callback and the dropped Database/user_data.
+            unsafe { Box::from_raw(db) }.shutdown();
         }
     });
 }
@@ -331,6 +338,65 @@ mod tests {
         assert_eq!(count, 0);
         let null = guard_or(ptr::null_mut::<RaftDb>(), || panic!("injected panic"));
         assert!(null.is_null());
+    }
+
+    #[test]
+    fn close_blocks_until_observer_callbacks_drain() {
+        use std::os::raw::c_void;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        static CLOSED: AtomicBool = AtomicBool::new(false);
+        static FIRED_AFTER_CLOSE: AtomicBool = AtomicBool::new(false);
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn slow_callback(_event: *const c_char, _user_data: *mut c_void) {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            // Simulate a slow platform callback still running while the
+            // host calls rft_close from another thread.
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            if CLOSED.load(Ordering::SeqCst) {
+                FIRED_AFTER_CLOSE.store(true, Ordering::SeqCst);
+            }
+        }
+
+        unsafe {
+            let (db, dir) = open_test_db("close_drains");
+            let coll = std::ffi::CString::new("users").unwrap();
+
+            let mut sub_id = 0u64;
+            assert_eq!(
+                rft_observe(
+                    db,
+                    coll.as_ptr(),
+                    slow_callback,
+                    ptr::null_mut(),
+                    &mut sub_id
+                ),
+                RftError::Ok
+            );
+
+            // Trigger a mutation and give the observer task a moment to
+            // enter the (slow) callback.
+            let json = r#"{"id":1,"fields":{}}"#;
+            rft_collection_put(db, coll.as_ptr(), json.as_ptr(), json.len());
+            std::thread::sleep(std::time::Duration::from_millis(20));
+
+            // Close must block until the in-flight callback completes.
+            rft_close(db);
+            CLOSED.store(true, Ordering::SeqCst);
+
+            // Wait longer than the callback sleep; if close had returned
+            // while the callback was still running, it would observe
+            // CLOSED == true and set the violation flag.
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            assert!(
+                !FIRED_AFTER_CLOSE.load(Ordering::SeqCst),
+                "observer callback outlived rft_close ({} calls)",
+                CALLS.load(Ordering::SeqCst)
+            );
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 
     #[test]
