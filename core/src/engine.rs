@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::compaction::CompactionConfig;
 use crate::manifest::{Manifest, SSTableMeta, TableId};
 use crate::memtable::MemTable;
-use crate::sstable::{BlockCache, SSTableReader, SSTableWriter};
+use crate::sstable::{BlockCache, SSTableError, SSTableIter, SSTableReader, SSTableWriter};
 use crate::wal::{HlcTimestamp, SyncMode, Wal, WalEntry};
 
 /// Unified error type for the storage engine.
@@ -490,43 +490,39 @@ impl StorageEngine {
             return Ok(());
         }
 
-        // Merge entries from all tables. Tables are sorted by id ascending
-        // in the manifest (oldest first). For each key, the highest-id
-        // (newest) entry wins.
-        let mut merged: std::collections::BTreeMap<Vec<u8>, Option<Vec<u8>>> =
-            std::collections::BTreeMap::new();
+        // Stream-merge entries from all tables (k-way merge over one
+        // decoded block per table — never the full level in RAM). Tables
+        // are sorted by id ascending in the manifest (oldest first); for
+        // each key, the newest (highest-id) entry wins. Readers are opened
+        // without the block cache so this one-shot pass doesn't pollute it.
+        let readers: Vec<SSTableReader> = tables
+            .iter()
+            .map(|meta| SSTableReader::open(self.sstable_path(meta.id, meta.level)))
+            .collect::<Result<_, _>>()?;
 
-        for meta in &tables {
-            let path = self.sstable_path(meta.id, meta.level);
-            let reader = SSTableReader::open(&path)?;
-            for (k, v) in reader.scan_all()? {
-                merged.insert(k, v);
-            }
-        }
-
-        let all_entries: Vec<(Vec<u8>, Option<Vec<u8>>)> = merged.into_iter().collect();
-
-        if all_entries.is_empty() {
-            return Ok(());
-        }
-
-        // Write merged SSTable.
         let new_id = self.next_table_id;
         self.next_table_id += 1;
 
-        let smallest_key = all_entries
-            .first()
-            .map(|(k, _)| k.clone())
-            .unwrap_or_default();
-        let largest_key = all_entries
-            .last()
-            .map(|(k, _)| k.clone())
-            .unwrap_or_default();
-        let entry_count = all_entries.len() as u64;
+        let mut merge_state = MergeState::default();
+        let merge = CompactMerge {
+            iters: readers.iter().map(|r| r.iter().peekable()).collect(),
+            state: &mut merge_state,
+        };
 
         let out_path = self.sstable_path(new_id, next_level);
         let writer = SSTableWriter::new(&out_path).with_block_size(self.config.block_size);
-        writer.write(all_entries.into_iter())?;
+        let write_result = writer.write(merge);
+
+        // A block-read failure mid-merge surfaces via the merge state,
+        // not the writer. Discard the partial output file in that case.
+        if let Some(err) = merge_state.error.take() {
+            fs::remove_file(&out_path).ok();
+            return Err(err.into());
+        }
+        let entry_count = write_result? as u64;
+
+        let smallest_key = merge_state.first_key.take().unwrap_or_default();
+        let largest_key = merge_state.last_key.take().unwrap_or_default();
 
         // Make the new file's directory entry durable before the manifest
         // references it (the file itself is fsynced by the writer).
@@ -697,6 +693,76 @@ fn sync_dir(dir: &Path) -> std::io::Result<()> {
         let _ = dir;
     }
     Ok(())
+}
+
+/// Out-of-band results of a [`CompactMerge`] pass: the writer consumes
+/// the iterator by value, so errors and key-range bookkeeping are
+/// reported through this shared state instead of the iterator itself.
+#[derive(Default)]
+struct MergeState {
+    /// First block-read/decode failure, if any. Once set, the merge
+    /// yields no further entries.
+    error: Option<SSTableError>,
+    /// Smallest key yielded so far.
+    first_key: Option<Vec<u8>>,
+    /// Largest key yielded so far.
+    last_key: Option<Vec<u8>>,
+}
+
+/// Streaming k-way merge over per-table iterators for compaction.
+///
+/// `iters` must be ordered oldest-to-newest; when several tables contain
+/// the same key, the newest table's entry (including tombstones) wins.
+/// Peak memory is one decoded block per input table.
+struct CompactMerge<'r, 's> {
+    iters: Vec<std::iter::Peekable<SSTableIter<'r>>>,
+    state: &'s mut MergeState,
+}
+
+impl Iterator for CompactMerge<'_, '_> {
+    type Item = (Vec<u8>, Option<Vec<u8>>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.state.error.is_some() {
+            return None;
+        }
+
+        // Find the smallest key among the iterator heads.
+        let mut min_key: Option<Vec<u8>> = None;
+        for it in self.iters.iter_mut() {
+            match it.peek() {
+                Some(Ok((k, _))) => {
+                    if min_key.as_ref().is_none_or(|m| k < m) {
+                        min_key = Some(k.clone());
+                    }
+                }
+                Some(Err(_)) => {
+                    if let Some(Err(e)) = it.next() {
+                        self.state.error = Some(e);
+                    }
+                    return None;
+                }
+                None => {}
+            }
+        }
+        let min_key = min_key?;
+
+        // Consume that key from every table holding it; iterating
+        // oldest-to-newest means the last value taken is the newest.
+        let mut winner: Option<Option<Vec<u8>>> = None;
+        for it in self.iters.iter_mut() {
+            let head_matches = matches!(it.peek(), Some(Ok((k, _))) if *k == min_key);
+            if head_matches {
+                if let Some(Ok((_, v))) = it.next() {
+                    winner = Some(v);
+                }
+            }
+        }
+
+        self.state.first_key.get_or_insert_with(|| min_key.clone());
+        self.state.last_key = Some(min_key.clone());
+        winner.map(|v| (min_key, v))
+    }
 }
 
 /// Statistics returned after a compaction pass.
@@ -1144,6 +1210,75 @@ mod tests {
         engine.compact().unwrap();
 
         assert_eq!(engine.get(b"X").unwrap(), Some(b"new".to_vec()));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn streaming_compaction_merges_overlapping_multi_block_tables() {
+        let dir = temp_dir("compact_streaming");
+        let config = StorageConfig {
+            memtable_size: 1024 * 1024,
+            compaction: CompactionConfig {
+                level_threshold: 3,
+                max_levels: 3,
+                block_size: 128,
+            },
+            ..default_config()
+        };
+        let mut engine = StorageEngine::open(&dir, config).unwrap();
+
+        // Three overlapping flushes, each spanning many blocks.
+        for round in 0..3 {
+            for i in (round..200).step_by(3) {
+                engine
+                    .put(
+                        format!("key-{i:05}").into_bytes(),
+                        format!("r{round}-value-{i:05}").into_bytes(),
+                    )
+                    .unwrap();
+            }
+            // Overlap: every round rewrites key-00000..key-00010.
+            for i in 0..10 {
+                engine
+                    .put(
+                        format!("key-{i:05}").into_bytes(),
+                        format!("r{round}-overlap-{i:05}").into_bytes(),
+                    )
+                    .unwrap();
+            }
+            engine.flush().unwrap();
+        }
+        // Newest flush deletes one key.
+        engine.delete(b"key-00099".to_vec()).unwrap();
+        engine.flush().unwrap();
+
+        let stats = engine.compact().unwrap();
+        assert!(stats.tables_merged >= 3);
+
+        // Overlapping keys resolve to the newest round.
+        for i in 0..10 {
+            assert_eq!(
+                engine.get(format!("key-{i:05}").as_bytes()).unwrap(),
+                Some(format!("r2-overlap-{i:05}").into_bytes()),
+                "overlap key {i}"
+            );
+        }
+        // Deleted key stays deleted after the merge.
+        assert_eq!(engine.get(b"key-00099").unwrap(), None);
+        // A non-overlapping key from each round survives.
+        assert_eq!(
+            engine.get(b"key-00033").unwrap(),
+            Some(b"r0-value-00033".to_vec())
+        );
+        assert_eq!(
+            engine.get(b"key-00034").unwrap(),
+            Some(b"r1-value-00034".to_vec())
+        );
+        assert_eq!(
+            engine.get(b"key-00035").unwrap(),
+            Some(b"r2-value-00035".to_vec())
+        );
 
         fs::remove_dir_all(&dir).ok();
     }

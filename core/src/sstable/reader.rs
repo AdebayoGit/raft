@@ -123,7 +123,10 @@ impl SSTableReader {
         self.entry_count
     }
 
-    /// Read every entry in sorted order. Used by compaction to merge tables.
+    /// Read every entry in sorted order into memory.
+    ///
+    /// Prefer [`SSTableReader::iter`] for large tables — it holds only
+    /// one decoded block at a time.
     pub fn scan_all(&self) -> Result<Vec<KvPair>, SSTableError> {
         let mut all = Vec::new();
         for ie in &self.index {
@@ -131,6 +134,18 @@ impl SSTableReader {
             all.extend(Self::decode_block(&block, ie.offset)?);
         }
         Ok(all)
+    }
+
+    /// Streaming iterator over every entry in sorted order, decoding one
+    /// data block at a time. Peak memory is a single block regardless of
+    /// table size — used by compaction to merge tables without loading
+    /// them fully into RAM.
+    pub fn iter(&self) -> SSTableIter<'_> {
+        SSTableIter {
+            reader: self,
+            block_idx: 0,
+            entries: Vec::new().into_iter(),
+        }
     }
 
     /// Point lookup — returns `Some(Some(value))` for a live key,
@@ -386,6 +401,47 @@ impl SSTableReader {
     }
 }
 
+/// Streaming iterator over an SSTable's entries in sorted key order.
+///
+/// Decodes one data block at a time, so peak memory is one block plus
+/// the entries decoded from it. Created via [`SSTableReader::iter`].
+pub struct SSTableIter<'a> {
+    reader: &'a SSTableReader,
+    /// Next index-block entry to decode.
+    block_idx: usize,
+    /// Entries of the current block, drained front to back.
+    entries: std::vec::IntoIter<KvPair>,
+}
+
+impl Iterator for SSTableIter<'_> {
+    type Item = Result<KvPair, SSTableError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(kv) = self.entries.next() {
+                return Some(Ok(kv));
+            }
+            if self.block_idx >= self.reader.index.len() {
+                return None;
+            }
+            let ie = &self.reader.index[self.block_idx];
+            self.block_idx += 1;
+            match self
+                .reader
+                .read_block_bytes(ie)
+                .and_then(|b| SSTableReader::decode_block(&b, ie.offset))
+            {
+                Ok(entries) => self.entries = entries.into_iter(),
+                Err(e) => {
+                    // Poison the iterator: no further blocks after an error.
+                    self.block_idx = self.reader.index.len();
+                    return Some(Err(e));
+                }
+            }
+        }
+    }
+}
+
 /// Positional read that fills `buf` from `offset` without moving a shared
 /// file cursor — safe for concurrent readers over the same handle.
 #[cfg(unix)]
@@ -608,6 +664,28 @@ mod tests {
         ];
         let reader = write_and_open("before_first", entries);
         assert_eq!(reader.get(b"a").unwrap(), None);
+    }
+
+    #[test]
+    fn iter_streams_all_entries_in_order() {
+        let entries = sample_entries(200);
+        let reader = write_and_open("iter_streams", entries.clone());
+
+        let collected: Vec<_> = reader.iter().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(collected, entries);
+    }
+
+    #[test]
+    fn iter_includes_tombstones() {
+        let entries = vec![
+            (b"a".to_vec(), Some(b"1".to_vec())),
+            (b"b".to_vec(), None),
+            (b"c".to_vec(), Some(b"3".to_vec())),
+        ];
+        let reader = write_and_open("iter_tombstones", entries.clone());
+
+        let collected: Vec<_> = reader.iter().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(collected, entries);
     }
 
     #[test]

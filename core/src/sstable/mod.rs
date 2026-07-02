@@ -27,7 +27,7 @@ mod writer;
 pub use bloom::BloomFilter;
 pub use cache::BlockCache;
 pub use error::SSTableError;
-pub use reader::SSTableReader;
+pub use reader::{SSTableIter, SSTableReader};
 pub use writer::SSTableWriter;
 
 /// Magic bytes written at the end of every SSTable footer.
