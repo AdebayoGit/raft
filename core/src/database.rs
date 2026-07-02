@@ -24,8 +24,10 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::engine::{StorageConfig, StorageEngine, StorageError};
-use crate::index::DocId;
-use crate::query::{Document, DocumentStore, IndexSet, Query, QueryExecutor, QueryPlanner};
+use crate::index::{BTreeIndex, DocId, HashIndex, Index};
+use crate::query::{
+    Document, DocumentStore, IndexInfo, IndexKind, IndexSet, Query, QueryExecutor, QueryPlanner,
+};
 use crate::transaction::{TransactionError, VersionedDocument, VersionedStore};
 
 #[cfg(feature = "async")]
@@ -50,6 +52,7 @@ pub enum DatabaseError {
 const DOC_PREFIX: &[u8] = b"__doc__/";
 const META_PREFIX: &[u8] = b"__meta__/";
 const ID_COUNTER_SUFFIX: &[u8] = b"/__id_counter";
+const INDEX_SPEC_INFIX: &[u8] = b"/__index__/";
 
 /// In-memory state for a single collection.
 ///
@@ -62,6 +65,10 @@ struct CollectionState {
     versions: HashMap<DocId, u64>,
     next_version: u64,
     next_doc_id: u64,
+    /// Secondary hash indexes, keyed by indexed field name.
+    hash_indexes: HashMap<String, HashIndex>,
+    /// Secondary B-tree indexes, keyed by indexed field name.
+    btree_indexes: HashMap<String, BTreeIndex>,
 }
 
 impl Default for CollectionState {
@@ -71,7 +78,56 @@ impl Default for CollectionState {
             versions: HashMap::new(),
             next_version: 1,
             next_doc_id: 1,
+            hash_indexes: HashMap::new(),
+            btree_indexes: HashMap::new(),
         }
+    }
+}
+
+impl CollectionState {
+    /// Add `doc` to every secondary index that covers one of its fields.
+    fn index_doc(&mut self, doc: &Document) {
+        for (field, index) in self.hash_indexes.iter_mut() {
+            if let Some(value) = doc.get(field) {
+                index.insert(&value.to_index_bytes(), doc.id);
+            }
+        }
+        for (field, index) in self.btree_indexes.iter_mut() {
+            if let Some(value) = doc.get(field) {
+                index.insert(&value.to_index_bytes(), doc.id);
+            }
+        }
+    }
+
+    /// Remove `doc`'s entries from every secondary index.
+    fn unindex_doc(&mut self, doc: &Document) {
+        for (field, index) in self.hash_indexes.iter_mut() {
+            if let Some(value) = doc.get(field) {
+                index.remove(&value.to_index_bytes(), doc.id);
+            }
+        }
+        for (field, index) in self.btree_indexes.iter_mut() {
+            if let Some(value) = doc.get(field) {
+                index.remove(&value.to_index_bytes(), doc.id);
+            }
+        }
+    }
+
+    /// Metadata about every index on this collection, for the planner.
+    fn index_infos(&self) -> Vec<IndexInfo> {
+        self.hash_indexes
+            .iter()
+            .map(|(field, index)| IndexInfo {
+                field: field.clone(),
+                kind: IndexKind::Hash,
+                entry_count: index.len(),
+            })
+            .chain(self.btree_indexes.iter().map(|(field, index)| IndexInfo {
+                field: field.clone(),
+                kind: IndexKind::BTree,
+                entry_count: index.len(),
+            }))
+            .collect()
     }
 }
 
@@ -155,10 +211,15 @@ impl Database {
 
         let mut collections = self.inner.write_collections();
         let state = collections.entry(collection.to_string()).or_default();
-        let was_present = state.docs.contains_key(&id);
+        let old = state.docs.remove(&id);
+        let was_present = old.is_some();
+        if let Some(ref old_doc) = old {
+            state.unindex_doc(old_doc);
+        }
         let version = state.next_version;
         state.next_version += 1;
         state.next_doc_id = state.next_doc_id.max(id.0 + 1);
+        state.index_doc(&doc);
         state.docs.insert(id, doc);
         state.versions.insert(id, version);
         drop(collections);
@@ -221,7 +282,9 @@ impl Database {
 
         let mut collections = self.inner.write_collections();
         if let Some(state) = collections.get_mut(collection) {
-            state.docs.remove(&id);
+            if let Some(old) = state.docs.remove(&id) {
+                state.unindex_doc(&old);
+            }
             state.versions.remove(&id);
         }
         drop(collections);
@@ -258,13 +321,76 @@ impl Database {
             .unwrap_or(0)
     }
 
+    // ── Indexes ─────────────────────────────────────────────────────────
+
+    /// Create a secondary index on `field` in `collection`.
+    ///
+    /// The index is backfilled from all existing documents, maintained on
+    /// every subsequent write/delete (including transactional commits),
+    /// and persisted so it is rebuilt automatically on reopen. Creating
+    /// an index that already exists rebuilds it (idempotent).
+    pub fn create_index(
+        &self,
+        collection: &str,
+        field: &str,
+        kind: IndexKind,
+    ) -> Result<(), DatabaseError> {
+        // Persist the spec first so the index survives reopen; the engine
+        // lock also serialises against concurrent writers so the backfill
+        // below observes a stable document set.
+        let mut engine = self.inner.lock_engine();
+        let spec = match kind {
+            IndexKind::Hash => b"hash".to_vec(),
+            IndexKind::BTree => b"btree".to_vec(),
+        };
+        engine.put(index_spec_key(collection, field), spec)?;
+
+        let mut collections = self.inner.write_collections();
+        let state = collections.entry(collection.to_string()).or_default();
+        match kind {
+            IndexKind::Hash => {
+                let mut index = HashIndex::new();
+                for doc in state.docs.values() {
+                    if let Some(value) = doc.get(field) {
+                        index.insert(&value.to_index_bytes(), doc.id);
+                    }
+                }
+                state.btree_indexes.remove(field);
+                state.hash_indexes.insert(field.to_string(), index);
+            }
+            IndexKind::BTree => {
+                let mut index = BTreeIndex::new();
+                for doc in state.docs.values() {
+                    if let Some(value) = doc.get(field) {
+                        index.insert(&value.to_index_bytes(), doc.id);
+                    }
+                }
+                state.hash_indexes.remove(field);
+                state.btree_indexes.insert(field.to_string(), index);
+            }
+        }
+        Ok(())
+    }
+
     // ── Query ───────────────────────────────────────────────────────────
 
-    /// Execute `query` against the in-memory document store. Currently
-    /// always uses a full scan — secondary index integration is on the
-    /// roadmap, but the executor still applies filters/sort/limit/offset.
+    /// Execute `query` against the in-memory document store. The planner
+    /// consults the collection's secondary indexes and picks the cheapest
+    /// strategy (hash lookup, B-tree range, or full scan); the executor
+    /// then applies filters/sort/limit/offset.
     pub fn query(&self, query: &Query) -> Vec<Document> {
         execute_query(&self.inner, query)
+    }
+
+    /// The plan the query engine would use for `query` — exposed for
+    /// diagnostics and tests.
+    pub fn explain(&self, query: &Query) -> crate::query::QueryPlan {
+        let collections = self.inner.read_collections();
+        let (indexes, total) = collections
+            .get(query.collection_name())
+            .map(|s| (s.index_infos(), s.docs.len()))
+            .unwrap_or_default();
+        QueryPlanner::plan(query, &indexes, total)
     }
 
     /// Subscribe to a live query. Returns the current snapshot of
@@ -393,6 +519,56 @@ impl Database {
             state.next_version = 2;
         }
 
+        // Rehydrate persisted index specs and rebuild each index from the
+        // documents loaded above. Layout: __meta__/{collection}/__index__/{field}.
+        for (key, value) in engine.scan_prefix(META_PREFIX)? {
+            let rest = &key[META_PREFIX.len()..];
+            let Some(pos) = find_subslice(rest, INDEX_SPEC_INFIX) else {
+                continue;
+            };
+            let Ok(collection) = std::str::from_utf8(&rest[..pos]) else {
+                continue;
+            };
+            let Ok(field) = std::str::from_utf8(&rest[pos + INDEX_SPEC_INFIX.len()..]) else {
+                continue;
+            };
+            let state = collections.entry(collection.to_string()).or_default();
+            match value.as_slice() {
+                b"hash" => {
+                    state
+                        .hash_indexes
+                        .insert(field.to_string(), HashIndex::new());
+                }
+                b"btree" => {
+                    state
+                        .btree_indexes
+                        .insert(field.to_string(), BTreeIndex::new());
+                }
+                _ => continue,
+            }
+        }
+
+        for state in collections.values_mut() {
+            let CollectionState {
+                docs,
+                hash_indexes,
+                btree_indexes,
+                ..
+            } = state;
+            for doc in docs.values() {
+                for (field, index) in hash_indexes.iter_mut() {
+                    if let Some(value) = doc.get(field) {
+                        index.insert(&value.to_index_bytes(), doc.id);
+                    }
+                }
+                for (field, index) in btree_indexes.iter_mut() {
+                    if let Some(value) = doc.get(field) {
+                        index.insert(&value.to_index_bytes(), doc.id);
+                    }
+                }
+            }
+        }
+
         Ok(collections)
     }
 }
@@ -425,15 +601,23 @@ impl DocumentStore for CollectionView<'_> {
 /// Used by both [`Database::query`] and [`DatabaseQueryRunner`].
 fn execute_query(inner: &DatabaseInner, query: &Query) -> Vec<Document> {
     let collections = inner.read_collections();
-    let view = CollectionView {
-        state: collections.get(query.collection_name()),
-    };
-    let plan = QueryPlanner::plan(query, &[], view.count());
-    let hash = HashMap::new();
-    let btree = HashMap::new();
-    let idx_set = IndexSet {
-        hash: &hash,
-        btree: &btree,
+    let state = collections.get(query.collection_name());
+    let view = CollectionView { state };
+
+    let indexes = state.map(|s| s.index_infos()).unwrap_or_default();
+    let plan = QueryPlanner::plan(query, &indexes, view.count());
+
+    let empty_hash = HashMap::new();
+    let empty_btree = HashMap::new();
+    let idx_set = match state {
+        Some(s) => IndexSet {
+            hash: &s.hash_indexes,
+            btree: &s.btree_indexes,
+        },
+        None => IndexSet {
+            hash: &empty_hash,
+            btree: &empty_btree,
+        },
     };
     QueryExecutor::execute(query, &plan, &view, &idx_set)
 }
@@ -592,10 +776,15 @@ impl DbTransaction {
         let mut collections = self.inner.write_collections();
         for ((coll, id), doc, _) in writes {
             let state = collections.entry(coll.clone()).or_default();
-            let was_present = state.docs.contains_key(&id);
+            let old = state.docs.remove(&id);
+            let was_present = old.is_some();
+            if let Some(ref old_doc) = old {
+                state.unindex_doc(old_doc);
+            }
             let version = state.next_version;
             state.next_version += 1;
             state.next_doc_id = state.next_doc_id.max(id.0 + 1);
+            state.index_doc(&doc);
             state.docs.insert(id, doc);
             state.versions.insert(id, version);
 
@@ -619,7 +808,13 @@ impl DbTransaction {
                 .get_mut(&coll)
                 .map(|s| {
                     s.versions.remove(&id);
-                    s.docs.remove(&id).is_some()
+                    match s.docs.remove(&id) {
+                        Some(old) => {
+                            s.unindex_doc(&old);
+                            true
+                        }
+                        None => false,
+                    }
                 })
                 .unwrap_or(false);
             if removed {
@@ -724,6 +919,25 @@ fn doc_key(collection: &str, id: DocId) -> Vec<u8> {
     k
 }
 
+/// Key of the persisted index spec: `__meta__/{collection}/__index__/{field}`.
+fn index_spec_key(collection: &str, field: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(
+        META_PREFIX.len() + collection.len() + INDEX_SPEC_INFIX.len() + field.len(),
+    );
+    k.extend_from_slice(META_PREFIX);
+    k.extend_from_slice(collection.as_bytes());
+    k.extend_from_slice(INDEX_SPEC_INFIX);
+    k.extend_from_slice(field.as_bytes());
+    k
+}
+
+/// Position of the first occurrence of `needle` in `haystack`.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
 #[allow(dead_code)] // Reserved for future on-open rehydration.
 fn id_counter_key(collection: &str) -> Vec<u8> {
     let mut k = Vec::with_capacity(META_PREFIX.len() + collection.len() + ID_COUNTER_SUFFIX.len());
@@ -744,7 +958,7 @@ fn deserialize_doc(bytes: &[u8]) -> Result<Document, DatabaseError> {
 #[cfg(all(test, feature = "ffi"))]
 mod tests {
     use super::*;
-    use crate::query::{Filter, Sort, Value};
+    use crate::query::{Filter, ScanStrategy, Sort, Value};
     use std::path::PathBuf;
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -1019,6 +1233,152 @@ mod tests {
             assert!(db.get("users", DocId(i)).is_some(), "doc {i} missing");
         }
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── Secondary index integration (2A.1) ──────────────────────────────
+
+    #[test]
+    fn planner_uses_hash_index_for_equality() {
+        let dir = temp_dir("idx_plan_hash");
+        let db = Database::open(&dir).unwrap();
+        db.put("users", user(1, "Alice", 30)).unwrap();
+        db.create_index("users", "name", IndexKind::Hash).unwrap();
+
+        let q =
+            Query::collection("users").filter(Filter::eq("name", Value::String("Alice".into())));
+        let plan = db.explain(&q);
+        assert!(
+            matches!(plan.strategy, ScanStrategy::HashLookup { ref field, .. } if field == "name"),
+            "expected HashLookup, got {:?}",
+            plan.strategy
+        );
+
+        let results = db.query(&q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, DocId(1));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn planner_uses_btree_index_for_range() {
+        let dir = temp_dir("idx_plan_btree");
+        let db = Database::open(&dir).unwrap();
+        for i in 1..=10u64 {
+            db.put("users", user(i, &format!("U{i}"), i as i64))
+                .unwrap();
+        }
+        db.create_index("users", "age", IndexKind::BTree).unwrap();
+
+        let q = Query::collection("users").filter(Filter::gte("age", Value::Int(7)));
+        let plan = db.explain(&q);
+        assert!(
+            matches!(plan.strategy, ScanStrategy::BTreeRange { ref field, .. } if field == "age"),
+            "expected BTreeRange, got {:?}",
+            plan.strategy
+        );
+
+        let mut ages: Vec<i64> = db
+            .query(&q)
+            .iter()
+            .map(|d| match d.get("age") {
+                Some(Value::Int(n)) => *n,
+                other => panic!("unexpected age {other:?}"),
+            })
+            .collect();
+        ages.sort_unstable();
+        assert_eq!(ages, vec![7, 8, 9, 10]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unindexed_field_falls_back_to_full_scan() {
+        let dir = temp_dir("idx_fallback");
+        let db = Database::open(&dir).unwrap();
+        db.put("users", user(1, "Alice", 30)).unwrap();
+        db.create_index("users", "name", IndexKind::Hash).unwrap();
+
+        let q = Query::collection("users").filter(Filter::eq("age", Value::Int(30)));
+        assert_eq!(db.explain(&q).strategy, ScanStrategy::FullScan);
+        assert_eq!(db.query(&q).len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn index_maintained_across_put_update_delete() {
+        let dir = temp_dir("idx_maintain");
+        let db = Database::open(&dir).unwrap();
+        db.create_index("users", "name", IndexKind::Hash).unwrap();
+
+        // Insert after index creation.
+        db.put("users", user(1, "Alice", 30)).unwrap();
+        let by_alice =
+            Query::collection("users").filter(Filter::eq("name", Value::String("Alice".into())));
+        assert_eq!(db.query(&by_alice).len(), 1);
+
+        // Update changes the indexed value — old entry must disappear.
+        db.put("users", user(1, "Alicia", 31)).unwrap();
+        assert_eq!(db.query(&by_alice).len(), 0);
+        let by_alicia =
+            Query::collection("users").filter(Filter::eq("name", Value::String("Alicia".into())));
+        assert_eq!(db.query(&by_alicia).len(), 1);
+
+        // Delete removes the index entry.
+        db.delete("users", DocId(1)).unwrap();
+        assert_eq!(db.query(&by_alicia).len(), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn index_maintained_through_transaction_commit() {
+        let dir = temp_dir("idx_txn");
+        let db = Database::open(&dir).unwrap();
+        db.create_index("users", "name", IndexKind::Hash).unwrap();
+        db.put("users", user(1, "Alice", 30)).unwrap();
+        db.put("users", user(2, "Bob", 25)).unwrap();
+
+        let mut txn = db.begin_transaction();
+        txn.put("users", user(1, "Alicia", 31)).unwrap();
+        txn.delete("users", DocId(2)).unwrap();
+        txn.commit().unwrap();
+
+        let by_alice =
+            Query::collection("users").filter(Filter::eq("name", Value::String("Alice".into())));
+        let by_alicia =
+            Query::collection("users").filter(Filter::eq("name", Value::String("Alicia".into())));
+        let by_bob =
+            Query::collection("users").filter(Filter::eq("name", Value::String("Bob".into())));
+        assert_eq!(db.query(&by_alice).len(), 0);
+        assert_eq!(db.query(&by_alicia).len(), 1);
+        assert_eq!(db.query(&by_bob).len(), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn index_rebuilt_on_reopen() {
+        let dir = temp_dir("idx_reopen");
+        {
+            let db = Database::open(&dir).unwrap();
+            db.put("users", user(1, "Alice", 30)).unwrap();
+            db.create_index("users", "name", IndexKind::Hash).unwrap();
+            db.create_index("users", "age", IndexKind::BTree).unwrap();
+            db.put("users", user(2, "Bob", 25)).unwrap();
+        }
+
+        let db = Database::open(&dir).unwrap();
+        let eq = Query::collection("users").filter(Filter::eq("name", Value::String("Bob".into())));
+        assert!(
+            matches!(db.explain(&eq).strategy, ScanStrategy::HashLookup { .. }),
+            "hash index spec must survive reopen"
+        );
+        assert_eq!(db.query(&eq).len(), 1);
+
+        let range = Query::collection("users").filter(Filter::lte("age", Value::Int(26)));
+        assert!(
+            matches!(db.explain(&range).strategy, ScanStrategy::BTreeRange { .. }),
+            "btree index spec must survive reopen"
+        );
+        assert_eq!(db.query(&range).len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 

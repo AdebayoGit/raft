@@ -22,7 +22,7 @@ mod sort;
 pub use document::{Document, DocumentStore, Value};
 pub use executor::{IndexSet, QueryExecutor};
 pub use filter::{Filter, Predicate};
-pub use planner::{QueryPlan, QueryPlanner, ScanStrategy};
+pub use planner::{IndexInfo, IndexKind, QueryPlan, QueryPlanner, ScanStrategy};
 pub use sort::{Sort, SortDirection};
 
 /// A fully-specified query against a single collection.
