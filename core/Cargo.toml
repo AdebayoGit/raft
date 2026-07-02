@@ -2,6 +2,8 @@
 name = "raft-db"
 version = "0.1.0"
 edition = "2021"
+# MSRV — highest requirement in the dependency graph (getrandom 0.4).
+rust-version = "1.85"
 description = "Mobile-native embedded database. Offline-first by design."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/yourusername/raft-db"

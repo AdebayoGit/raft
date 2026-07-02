@@ -1,0 +1,5 @@
+# Pin the toolchain so builds are reproducible across machines and CI.
+# Keep in sync with `rust-version` in Cargo.toml (the MSRV floor).
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
