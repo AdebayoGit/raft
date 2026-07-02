@@ -33,7 +33,6 @@ pub struct SchemaBuilder {
     name: String,
     version: SchemaVersion,
     fields: Vec<FieldDef>,
-    seen_names: HashSet<String>,
     sync_authority: SyncAuthority,
 }
 
@@ -43,7 +42,6 @@ impl SchemaBuilder {
             name: name.into(),
             version: SchemaVersion(1),
             fields: Vec::new(),
-            seen_names: HashSet::new(),
             sync_authority: SyncAuthority::default(),
         }
     }
@@ -98,12 +96,10 @@ impl SchemaBuilder {
     /// Sets the conflict resolution strategy for the most recently added
     /// field. Returns the builder unchanged if no field has been added.
     ///
-    /// # Panics
-    ///
-    /// Debug builds panic if the strategy is not compatible with the
-    /// field's type (per [`ConflictStrategy::is_compatible_with`]).
-    /// Release builds defer the check to [`build`](Self::build), where it
-    /// surfaces as a [`SchemaError::IncompatibleConflictStrategy`].
+    /// Compatibility with the field's type (per
+    /// [`ConflictStrategy::is_compatible_with`]) is checked in
+    /// [`build`](Self::build), where an invalid combination surfaces as a
+    /// typed [`SchemaError::IncompatibleConflictStrategy`] — never a panic.
     ///
     /// # Example
     ///
@@ -120,11 +116,6 @@ impl SchemaBuilder {
     /// ```
     pub fn conflict(mut self, strategy: ConflictStrategy) -> Self {
         if let Some(last) = self.fields.last_mut() {
-            debug_assert!(
-                strategy.is_compatible_with(last.field_type()),
-                "conflict strategy {strategy:?} is not compatible with field type {:?}",
-                last.field_type(),
-            );
             last.set_conflict_strategy(strategy);
         }
         self
@@ -163,18 +154,9 @@ impl SchemaBuilder {
         hint: CrdtHint,
         required: bool,
     ) -> Self {
-        // Validation is deferred to build() for ergonomic chaining, but
-        // duplicate names and empty names are caught eagerly so the builder
-        // state stays consistent.
-        debug_assert!(
-            !name.is_empty(),
-            "field name must not be empty — will error on build()"
-        );
-        debug_assert!(
-            hint.is_compatible_with(field_type),
-            "CRDT hint {hint:?} is not compatible with {field_type:?}"
-        );
-        self.seen_names.insert(name.clone());
+        // Validation is deferred to build() for ergonomic chaining: empty
+        // names, duplicates, and incompatible CRDT hints all surface as
+        // typed SchemaError values there — misuse never panics.
         self.fields
             .push(FieldDef::new(name, field_type, hint, required));
         self
@@ -383,26 +365,39 @@ mod tests {
     }
 
     #[test]
-    fn build_rejects_incompatible_strategy_in_release() {
-        // In debug builds, .conflict() asserts compatibility eagerly. The
-        // build()-level guard catches the case where a strategy is set
-        // through other means (e.g. manual construction or future
-        // deserialisation paths).
-        let mut f = FieldDef::new(
-            "items".into(),
-            FieldType::Collection,
-            CrdtHint::OrSet,
-            false,
-        );
-        f.set_conflict_strategy(ConflictStrategy::LastWriteWins); // invalid
-        let mut b = SchemaBuilder::new("bad");
-        b.fields.push(f);
-        b.seen_names.insert("items".into());
-        let err = b.build().unwrap_err();
+    fn build_rejects_incompatible_conflict_strategy() {
+        // Misuse through the public fluent API returns a typed error from
+        // build() — it must never panic.
+        let err = Schema::builder("bad")
+            .field("items", FieldType::Collection)
+            .conflict(ConflictStrategy::LastWriteWins) // invalid for Collection
+            .build()
+            .unwrap_err();
         assert!(matches!(
             err,
             SchemaError::IncompatibleConflictStrategy { ref field, .. } if field == "items"
         ));
+    }
+
+    #[test]
+    fn build_rejects_incompatible_crdt_hint_via_public_api() {
+        let err = Schema::builder("bad")
+            .field_with_hint("title", FieldType::String, CrdtHint::Counter)
+            .build()
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SchemaError::IncompatibleCrdtHint { ref field, .. } if field == "title"
+        ));
+    }
+
+    #[test]
+    fn build_rejects_empty_field_name_via_public_api() {
+        let err = Schema::builder("bad")
+            .field("", FieldType::String)
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, SchemaError::EmptyFieldName));
     }
 
     #[test]
