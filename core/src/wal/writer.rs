@@ -5,6 +5,28 @@ use std::path::{Path, PathBuf};
 use super::entry::WalEntry;
 use super::error::WalError;
 
+/// Durability policy applied after each WAL append.
+///
+/// Controls when the WAL fsyncs to durable storage. `Always` is the safe
+/// default: a successful `append` guarantees the entry survives power loss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncMode {
+    /// fsync after every append. Maximum durability (default).
+    Always,
+    /// fsync after every N appends. Bounded data-loss window of at most
+    /// N-1 entries on power loss. `EveryN(0)` behaves like `EveryN(1)`.
+    EveryN(u32),
+    /// Never fsync automatically — caller must invoke [`Wal::sync`].
+    /// Data-loss window is unbounded on power loss.
+    Off,
+}
+
+impl Default for SyncMode {
+    fn default() -> Self {
+        SyncMode::Always
+    }
+}
+
 /// Write-ahead log backed by a single append-only file.
 ///
 /// All mutations flow through the WAL before reaching the memtable.
@@ -12,24 +34,51 @@ use super::error::WalError;
 pub struct Wal {
     path: PathBuf,
     writer: BufWriter<File>,
+    sync_mode: SyncMode,
+    appends_since_sync: u32,
 }
 
 impl Wal {
-    /// Open (or create) a WAL file at `path`.
+    /// Open (or create) a WAL file at `path` with the default
+    /// [`SyncMode::Always`] durability policy.
     ///
     /// The file is opened in append mode — existing data is preserved.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, WalError> {
+        Self::open_with_mode(path, SyncMode::Always)
+    }
+
+    /// Open (or create) a WAL file at `path` with an explicit sync mode.
+    pub fn open_with_mode(path: impl AsRef<Path>, sync_mode: SyncMode) -> Result<Self, WalError> {
         let path = path.as_ref().to_path_buf();
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let writer = BufWriter::new(file);
-        Ok(Self { path, writer })
+        Ok(Self {
+            path,
+            writer,
+            sync_mode,
+            appends_since_sync: 0,
+        })
     }
 
-    /// Append a single entry to the log and flush to disk.
+    /// Append a single entry to the log, then apply the durability policy.
+    ///
+    /// With [`SyncMode::Always`] (the default) the entry is fsynced to
+    /// durable storage before this returns.
     pub fn append(&mut self, entry: &WalEntry) -> Result<(), WalError> {
         let encoded = entry.encode_to_vec();
         self.writer.write_all(&encoded)?;
         self.writer.flush()?;
+        self.appends_since_sync = self.appends_since_sync.saturating_add(1);
+
+        match self.sync_mode {
+            SyncMode::Always => self.sync()?,
+            SyncMode::EveryN(n) => {
+                if self.appends_since_sync >= n.max(1) {
+                    self.sync()?;
+                }
+            }
+            SyncMode::Off => {}
+        }
         Ok(())
     }
 
@@ -47,7 +96,13 @@ impl Wal {
     pub fn sync(&mut self) -> Result<(), WalError> {
         self.writer.flush()?;
         self.writer.get_ref().sync_all()?;
+        self.appends_since_sync = 0;
         Ok(())
+    }
+
+    /// The durability policy currently in effect.
+    pub fn sync_mode(&self) -> SyncMode {
+        self.sync_mode
     }
 }
 
@@ -239,6 +294,92 @@ mod tests {
         assert_eq!(entries, vec![e1, e2]);
 
         fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn default_sync_mode_is_always() {
+        assert_eq!(SyncMode::default(), SyncMode::Always);
+
+        let path = temp_wal_path("default_mode");
+        let _ = fs::remove_file(&path);
+        let wal = Wal::open(&path).unwrap();
+        assert_eq!(wal.sync_mode(), SyncMode::Always);
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn every_n_mode_syncs_on_interval() {
+        let path = temp_wal_path("every_n_mode");
+        let _ = fs::remove_file(&path);
+
+        let mut wal = Wal::open_with_mode(&path, SyncMode::EveryN(3)).unwrap();
+        for i in 0..2 {
+            wal.append(&make_entry(i, 0, b"x")).unwrap();
+        }
+        assert_eq!(wal.appends_since_sync, 2);
+        wal.append(&make_entry(2, 0, b"x")).unwrap();
+        assert_eq!(wal.appends_since_sync, 0, "third append should sync");
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn every_zero_behaves_like_every_one() {
+        let path = temp_wal_path("every_zero");
+        let _ = fs::remove_file(&path);
+
+        let mut wal = Wal::open_with_mode(&path, SyncMode::EveryN(0)).unwrap();
+        wal.append(&make_entry(1, 0, b"x")).unwrap();
+        assert_eq!(wal.appends_since_sync, 0);
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn off_mode_never_auto_syncs() {
+        let path = temp_wal_path("off_mode");
+        let _ = fs::remove_file(&path);
+
+        let mut wal = Wal::open_with_mode(&path, SyncMode::Off).unwrap();
+        for i in 0..10 {
+            wal.append(&make_entry(i, 0, b"x")).unwrap();
+        }
+        assert_eq!(wal.appends_since_sync, 10);
+        wal.sync().unwrap();
+        assert_eq!(wal.appends_since_sync, 0);
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn appended_entries_replayable_in_all_modes() {
+        for (name, mode) in [
+            ("mode_always", SyncMode::Always),
+            ("mode_every_n", SyncMode::EveryN(4)),
+            ("mode_off", SyncMode::Off),
+        ] {
+            let path = temp_wal_path(name);
+            let _ = fs::remove_file(&path);
+
+            let entries_in: Vec<WalEntry> =
+                (0..7).map(|i| make_entry(i, 0, b"payload")).collect();
+            {
+                let mut wal = Wal::open_with_mode(&path, mode).unwrap();
+                for e in &entries_in {
+                    wal.append(e).unwrap();
+                }
+            }
+
+            let wal = Wal::open(&path).unwrap();
+            let out: Vec<WalEntry> = wal
+                .replay()
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(out, entries_in, "mode {mode:?}");
+
+            fs::remove_file(&path).ok();
+        }
     }
 
     #[test]

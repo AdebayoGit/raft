@@ -14,7 +14,7 @@ use crate::compaction::CompactionConfig;
 use crate::manifest::{Manifest, SSTableMeta, TableId};
 use crate::memtable::MemTable;
 use crate::sstable::{SSTableReader, SSTableWriter};
-use crate::wal::{HlcTimestamp, Wal, WalEntry};
+use crate::wal::{HlcTimestamp, SyncMode, Wal, WalEntry};
 
 /// Unified error type for the storage engine.
 #[derive(Debug, thiserror::Error)]
@@ -48,6 +48,9 @@ pub struct StorageConfig {
     /// Device ID for WAL entries (128-bit UUID).
     /// Default: 0 (single-device / testing).
     pub device_id: u128,
+    /// WAL durability policy. Default: [`SyncMode::Always`] — every
+    /// acknowledged write survives power loss.
+    pub wal_sync: SyncMode,
 }
 
 impl Default for StorageConfig {
@@ -57,6 +60,7 @@ impl Default for StorageConfig {
             block_size: 4096,
             compaction: CompactionConfig::default(),
             device_id: 0,
+            wal_sync: SyncMode::Always,
         }
     }
 }
@@ -185,7 +189,7 @@ impl StorageEngine {
 
         // Open WAL.
         let wal_path = db_dir.join("wal.log");
-        let wal = Wal::open(&wal_path)?;
+        let wal = Wal::open_with_mode(&wal_path, config.wal_sync)?;
 
         // Create memtable and replay WAL.
         let mut memtable = MemTable::new(config.memtable_size);
@@ -492,7 +496,7 @@ impl StorageEngine {
         // Truncate WAL — memtable data is now durable in the SSTable.
         let wal_path = self.db_dir.join("wal.log");
         fs::write(&wal_path, b"")?;
-        self.wal = Wal::open(&wal_path)?;
+        self.wal = Wal::open_with_mode(&wal_path, self.config.wal_sync)?;
 
         Ok(())
     }
@@ -554,6 +558,7 @@ mod tests {
                 block_size: 128,
             },
             device_id: 0xDEAD,
+            wal_sync: SyncMode::Always,
         }
     }
 

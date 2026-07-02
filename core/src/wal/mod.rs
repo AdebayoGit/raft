@@ -10,4 +10,4 @@ mod writer;
 
 pub use entry::{HlcTimestamp, WalEntry};
 pub use error::WalError;
-pub use writer::Wal;
+pub use writer::{SyncMode, Wal};
