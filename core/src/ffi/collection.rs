@@ -40,8 +40,9 @@ pub unsafe extern "C" fn rft_collection_put(
     doc_json_len: usize,
 ) -> RftError {
     super::guard(|| {
-        let Some(handle) = (unsafe { db.as_ref() }) else {
-            return RftError::NullPointer;
+        let handle = match unsafe { super::live_db(db) } {
+            Ok(h) => h,
+            Err(e) => return e,
         };
         if collection.is_null() || (doc_json.is_null() && doc_json_len > 0) {
             return RftError::NullPointer;
@@ -80,8 +81,9 @@ pub unsafe extern "C" fn rft_collection_put_auto(
     out_doc_id: *mut u64,
 ) -> RftError {
     super::guard(|| {
-        let Some(handle) = (unsafe { db.as_ref() }) else {
-            return RftError::NullPointer;
+        let handle = match unsafe { super::live_db(db) } {
+            Ok(h) => h,
+            Err(e) => return e,
         };
         if collection.is_null() || out_doc_id.is_null() || (doc_json.is_null() && doc_json_len > 0)
         {
@@ -128,8 +130,9 @@ pub unsafe extern "C" fn rft_collection_get(
     out_len: *mut usize,
 ) -> RftError {
     super::guard(|| {
-        let Some(handle) = (unsafe { db.as_ref() }) else {
-            return RftError::NullPointer;
+        let handle = match unsafe { super::live_db(db) } {
+            Ok(h) => h,
+            Err(e) => return e,
         };
         if collection.is_null() || out_len.is_null() {
             return RftError::NullPointer;
@@ -167,8 +170,9 @@ pub unsafe extern "C" fn rft_collection_delete(
     doc_id: u64,
 ) -> RftError {
     super::guard(|| {
-        let Some(handle) = (unsafe { db.as_ref() }) else {
-            return RftError::NullPointer;
+        let handle = match unsafe { super::live_db(db) } {
+            Ok(h) => h,
+            Err(e) => return e,
         };
         if collection.is_null() {
             return RftError::NullPointer;
@@ -200,8 +204,9 @@ pub unsafe extern "C" fn rft_collection_count(
     out_count: *mut usize,
 ) -> RftError {
     super::guard(|| {
-        let Some(handle) = (unsafe { db.as_ref() }) else {
-            return RftError::NullPointer;
+        let handle = match unsafe { super::live_db(db) } {
+            Ok(h) => h,
+            Err(e) => return e,
         };
         if collection.is_null() || out_count.is_null() {
             return RftError::NullPointer;
@@ -238,8 +243,9 @@ pub unsafe extern "C" fn rft_collection_list_ids(
     out_len: *mut usize,
 ) -> RftError {
     super::guard(|| {
-        let Some(handle) = (unsafe { db.as_ref() }) else {
-            return RftError::NullPointer;
+        let handle = match unsafe { super::live_db(db) } {
+            Ok(h) => h,
+            Err(e) => return e,
         };
         if collection.is_null() || out_len.is_null() {
             return RftError::NullPointer;

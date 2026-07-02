@@ -101,8 +101,9 @@ pub unsafe extern "C" fn rft_observe(
     out_sub_id: *mut u64,
 ) -> RftError {
     super::guard(|| {
-        let Some(handle) = (unsafe { db.as_ref() }) else {
-            return RftError::NullPointer;
+        let handle = match unsafe { super::live_db(db) } {
+            Ok(h) => h,
+            Err(e) => return e,
         };
         if collection.is_null() || out_sub_id.is_null() {
             return RftError::NullPointer;
@@ -201,8 +202,9 @@ pub unsafe extern "C" fn rft_observe_query(
     out_sub_id: *mut u64,
 ) -> RftError {
     super::guard(|| {
-        let Some(handle) = (unsafe { db.as_ref() }) else {
-            return RftError::NullPointer;
+        let handle = match unsafe { super::live_db(db) } {
+            Ok(h) => h,
+            Err(e) => return e,
         };
         if out_sub_id.is_null() || (query_json.is_null() && query_json_len > 0) {
             return RftError::NullPointer;
@@ -287,8 +289,9 @@ fn fire_diff(
 #[no_mangle]
 pub unsafe extern "C" fn rft_unobserve(db: *mut RaftDb, sub_id: u64) -> RftError {
     super::guard(|| {
-        let Some(handle) = (unsafe { db.as_ref() }) else {
-            return RftError::NullPointer;
+        let handle = match unsafe { super::live_db(db) } {
+            Ok(h) => h,
+            Err(e) => return e,
         };
 
         let join = {

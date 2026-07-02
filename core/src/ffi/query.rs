@@ -93,8 +93,9 @@ pub unsafe extern "C" fn rft_query_execute(
     out_result: *mut *mut RaftQueryResult,
 ) -> RftError {
     super::guard(|| {
-        let Some(handle) = (unsafe { db.as_ref() }) else {
-            return RftError::NullPointer;
+        let handle = match unsafe { super::live_db(db) } {
+            Ok(h) => h,
+            Err(e) => return e,
         };
         if out_result.is_null() || (query_json.is_null() && query_json_len > 0) {
             return RftError::NullPointer;
@@ -109,24 +110,24 @@ pub unsafe extern "C" fn rft_query_execute(
         let query: Query = spec.into();
         let docs = handle.database().query(&query);
 
-        let result = Box::new(RaftQueryResult { docs });
-        unsafe { ptr::write(out_result, Box::into_raw(result)) };
+        let raw = Box::into_raw(Box::new(RaftQueryResult { docs }));
+        super::registry::LIVE_QUERY_RESULTS.register(raw);
+        unsafe { ptr::write(out_result, raw) };
         RftError::Ok
     })
 }
 
-/// Number of documents in a query result. Returns 0 for null handles.
+/// Number of documents in a query result. Returns 0 for null, freed, or
+/// otherwise invalid handles.
 ///
 /// # Safety
 ///
 /// - `result` must be a handle returned by [`rft_query_execute`], or null.
 #[no_mangle]
 pub unsafe extern "C" fn rft_query_result_count(result: *const RaftQueryResult) -> usize {
-    super::guard_or(0, || {
-        if result.is_null() {
-            return 0;
-        }
-        unsafe { (*result).docs.len() }
+    super::guard_or(0, || match unsafe { super::live_query_result(result) } {
+        Ok(r) => r.docs.len(),
+        Err(_) => 0,
     })
 }
 
@@ -147,11 +148,14 @@ pub unsafe extern "C" fn rft_query_result_get(
     out_len: *mut usize,
 ) -> RftError {
     super::guard(|| {
-        if result.is_null() || out_len.is_null() {
+        let res = match unsafe { super::live_query_result(result) } {
+            Ok(r) => r,
+            Err(e) => return e,
+        };
+        if out_len.is_null() {
             return RftError::NullPointer;
         }
-        let docs = unsafe { &(*result).docs };
-        let Some(doc) = docs.get(index) else {
+        let Some(doc) = res.docs.get(index) else {
             return RftError::NotFound;
         };
 
@@ -164,7 +168,8 @@ pub unsafe extern "C" fn rft_query_result_get(
     })
 }
 
-/// Free a query result handle. Safe to call with null (no-op).
+/// Free a query result handle. Safe to call with null (no-op). Freeing
+/// an already-freed or foreign pointer is also a safe no-op.
 ///
 /// # Safety
 ///
@@ -173,7 +178,8 @@ pub unsafe extern "C" fn rft_query_result_get(
 #[no_mangle]
 pub unsafe extern "C" fn rft_query_result_free(result: *mut RaftQueryResult) {
     super::guard_or((), || {
-        if !result.is_null() {
+        // Unregister-wins: exactly one concurrent free proceeds.
+        if !result.is_null() && super::registry::LIVE_QUERY_RESULTS.unregister(result) {
             drop(unsafe { Box::from_raw(result) });
         }
     });

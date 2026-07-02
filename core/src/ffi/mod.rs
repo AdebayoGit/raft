@@ -38,6 +38,7 @@ mod error;
 mod handle;
 mod observe;
 mod query;
+mod registry;
 mod transaction;
 
 pub use collection::{
@@ -110,7 +111,9 @@ unsafe fn rft_open_impl(path: *const c_char, out_err: *mut RftError) -> *mut Raf
             if !out_err.is_null() {
                 unsafe { ptr::write(out_err, RftError::Ok) };
             }
-            Box::into_raw(Box::new(RaftDb::new(db)))
+            let raw = Box::into_raw(Box::new(RaftDb::new(db)));
+            registry::LIVE_DBS.register(raw);
+            raw
         }
         Err(_) => {
             if !out_err.is_null() {
@@ -129,13 +132,16 @@ unsafe fn rft_open_impl(path: *const c_char, out_err: *mut RftError) -> *mut Raf
 /// # Safety
 ///
 /// - `db` must be a handle returned by [`rft_open`], or null (no-op).
+///   Passing an already-closed or foreign pointer is a safe no-op.
 /// - No other thread may be using `db` concurrently with this call.
 /// - Must not be called from inside an observer callback (deadlock).
 /// - After this call, `db` is dangling and must not be used.
 #[no_mangle]
 pub unsafe extern "C" fn rft_close(db: *mut RaftDb) {
     guard_or((), || {
-        if !db.is_null() {
+        // Unregister-wins: exactly one concurrent close proceeds; a
+        // double-close or stale pointer is a safe no-op.
+        if !db.is_null() && registry::LIVE_DBS.unregister(db) {
             let handle = unsafe { &*db };
             observe::abort_all_subscriptions(handle);
             // Blocks until all observer tasks have drained, then frees
@@ -168,8 +174,9 @@ pub unsafe extern "C" fn rft_put(
     value_len: usize,
 ) -> RftError {
     guard(|| {
-        let Some(handle) = (unsafe { db.as_ref() }) else {
-            return RftError::NullPointer;
+        let handle = match unsafe { live_db(db) } {
+            Ok(h) => h,
+            Err(e) => return e,
         };
         if (key.is_null() && key_len > 0) || (value.is_null() && value_len > 0) {
             return RftError::NullPointer;
@@ -214,8 +221,9 @@ pub unsafe extern "C" fn rft_get(
     out_len: *mut usize,
 ) -> RftError {
     guard(|| {
-        let Some(handle) = (unsafe { db.as_ref() }) else {
-            return RftError::NullPointer;
+        let handle = match unsafe { live_db(db) } {
+            Ok(h) => h,
+            Err(e) => return e,
         };
         if (key.is_null() && key_len > 0) || out_len.is_null() {
             return RftError::NullPointer;
@@ -245,8 +253,9 @@ pub unsafe extern "C" fn rft_get(
 #[no_mangle]
 pub unsafe extern "C" fn rft_delete(db: *mut RaftDb, key: *const u8, key_len: usize) -> RftError {
     guard(|| {
-        let Some(handle) = (unsafe { db.as_ref() }) else {
-            return RftError::NullPointer;
+        let handle = match unsafe { live_db(db) } {
+            Ok(h) => h,
+            Err(e) => return e,
         };
         if key.is_null() && key_len > 0 {
             return RftError::NullPointer;
@@ -274,6 +283,70 @@ pub(crate) fn guard(f: impl FnOnce() -> RftError) -> RftError {
 /// returns `fallback` if the body panics.
 pub(crate) fn guard_or<T>(fallback: T, f: impl FnOnce() -> T) -> T {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(fallback)
+}
+
+/// Resolve a database handle against the live registry.
+///
+/// Returns [`RftError::NullPointer`] for null and
+/// [`RftError::InvalidHandle`] for a pointer that was never registered
+/// or has already been closed — so a stale handle fails safely instead
+/// of dereferencing freed memory.
+///
+/// # Safety
+///
+/// If `db` is live in the registry it was produced by [`rft_open`] and
+/// not yet closed, so it points to a valid `RaftDb`.
+pub(crate) unsafe fn live_db<'a>(db: *mut RaftDb) -> Result<&'a RaftDb, RftError> {
+    if db.is_null() {
+        return Err(RftError::NullPointer);
+    }
+    if !registry::LIVE_DBS.is_live(db) {
+        return Err(RftError::InvalidHandle);
+    }
+    Ok(unsafe { &*db })
+}
+
+/// Resolve a transaction handle against the live registry. Same
+/// contract as [`live_db`], but yields a mutable reference (transaction
+/// handles are single-threaded by API contract).
+///
+/// # Safety
+///
+/// If `txn` is live it was produced by
+/// [`rft_transaction_begin`](transaction::rft_transaction_begin) and not
+/// yet finalised, so it points to a valid `RaftTransaction`. The caller
+/// must not use the same transaction handle from multiple threads
+/// concurrently.
+pub(crate) unsafe fn live_txn<'a>(
+    txn: *mut RaftTransaction,
+) -> Result<&'a mut RaftTransaction, RftError> {
+    if txn.is_null() {
+        return Err(RftError::NullPointer);
+    }
+    if !registry::LIVE_TXNS.is_live(txn) {
+        return Err(RftError::InvalidHandle);
+    }
+    Ok(unsafe { &mut *txn })
+}
+
+/// Resolve a query-result handle against the live registry. Same
+/// contract as [`live_db`].
+///
+/// # Safety
+///
+/// If `result` is live it was produced by
+/// [`rft_query_execute`](query::rft_query_execute) and not yet freed,
+/// so it points to a valid `RaftQueryResult`.
+pub(crate) unsafe fn live_query_result<'a>(
+    result: *const RaftQueryResult,
+) -> Result<&'a RaftQueryResult, RftError> {
+    if result.is_null() {
+        return Err(RftError::NullPointer);
+    }
+    if !registry::LIVE_QUERY_RESULTS.is_live(result) {
+        return Err(RftError::InvalidHandle);
+    }
+    Ok(unsafe { &*result })
 }
 
 /// Standard "write `bytes` into caller buffer, fall back to size query"
@@ -393,6 +466,71 @@ mod tests {
                 !FIRED_AFTER_CLOSE.load(Ordering::SeqCst),
                 "observer callback outlived rft_close ({} calls)",
                 CALLS.load(Ordering::SeqCst)
+            );
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn stale_and_double_freed_handles_fail_safely() {
+        unsafe {
+            let (db, dir) = open_test_db("stale_handles");
+            let coll = CString::new("users").unwrap();
+
+            // A pointer that was never registered is InvalidHandle, not UB.
+            let fake_db = 0x1000 as *mut RaftDb; // aligned, never registered
+            assert_eq!(
+                rft_delete(fake_db, b"k".as_ptr(), 1),
+                RftError::InvalidHandle
+            );
+
+            // Query result: double free is a safe no-op; use-after-free
+            // returns InvalidHandle / 0.
+            let q = r#"{"collection":"users"}"#;
+            let mut result: *mut RaftQueryResult = ptr::null_mut();
+            assert_eq!(
+                rft_query_execute(db, q.as_ptr(), q.len(), &mut result),
+                RftError::Ok
+            );
+            rft_query_result_free(result);
+            rft_query_result_free(result); // double free: no-op
+            assert_eq!(rft_query_result_count(result), 0);
+            let mut len = 0usize;
+            assert_eq!(
+                rft_query_result_get(result, 0, ptr::null_mut(), &mut len),
+                RftError::InvalidHandle
+            );
+
+            // Transaction: second finalise and ops after commit fail safely.
+            let mut txn: *mut RaftTransaction = ptr::null_mut();
+            assert_eq!(rft_transaction_begin(db, &mut txn), RftError::Ok);
+            assert_eq!(rft_transaction_commit(txn), RftError::Ok);
+            assert_eq!(rft_transaction_commit(txn), RftError::InvalidHandle);
+            rft_transaction_rollback(txn); // safe no-op
+            assert_eq!(
+                rft_transaction_delete(txn, coll.as_ptr(), 1),
+                RftError::InvalidHandle
+            );
+
+            // Database: double close is a safe no-op; ops on a closed
+            // handle return InvalidHandle instead of crashing.
+            rft_close(db);
+            rft_close(db);
+            let json = r#"{"id":1,"fields":{}}"#;
+            assert_eq!(
+                rft_collection_put(db, coll.as_ptr(), json.as_ptr(), json.len()),
+                RftError::InvalidHandle
+            );
+            let mut count = 0usize;
+            assert_eq!(
+                rft_collection_count(db, coll.as_ptr(), &mut count),
+                RftError::InvalidHandle
+            );
+            let mut txn2: *mut RaftTransaction = ptr::null_mut();
+            assert_eq!(
+                rft_transaction_begin(db, &mut txn2),
+                RftError::InvalidHandle
             );
 
             std::fs::remove_dir_all(&dir).ok();
