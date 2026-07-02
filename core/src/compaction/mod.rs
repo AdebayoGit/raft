@@ -18,4 +18,4 @@ mod merge;
 mod scheduler;
 
 pub use error::CompactionError;
-pub use scheduler::{CompactionConfig, CompactionScheduler, CompactionStats};
+pub use scheduler::{CompactionConfig, CompactionScheduler, CompactionStats, DeviceState};

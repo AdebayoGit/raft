@@ -29,6 +29,31 @@ impl Default for CompactionConfig {
     }
 }
 
+/// Platform device signals used to decide whether compaction may run.
+///
+/// Mobile platforms feed these from their power/idle APIs (e.g. Android
+/// `JobScheduler` constraints, iOS `ProcessInfo` thermal/low-power state).
+/// The default is conservative: not idle, so compaction is deferred until
+/// the platform explicitly signals a good moment.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeviceState {
+    /// The device is idle (screen off / app backgrounded / maintenance window).
+    pub idle: bool,
+    /// The device is connected to power.
+    pub charging: bool,
+    /// The battery is low (platform-defined threshold, e.g. <20%).
+    pub battery_low: bool,
+}
+
+impl DeviceState {
+    /// Whether background compaction should be allowed to run.
+    ///
+    /// Policy: only when idle, and never on a low battery unless charging.
+    pub fn allows_compaction(&self) -> bool {
+        self.idle && (self.charging || !self.battery_low)
+    }
+}
+
 /// Statistics returned after a compaction pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompactionStats {
@@ -242,6 +267,38 @@ impl CompactionScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_state_default_defers_compaction() {
+        assert!(!DeviceState::default().allows_compaction());
+    }
+
+    #[test]
+    fn device_state_policy_matrix() {
+        let cases = [
+            // (idle, charging, battery_low) -> allowed
+            ((false, false, false), false),
+            ((false, true, false), false),
+            ((true, false, false), true),
+            ((true, true, false), true),
+            ((true, false, true), false),
+            ((true, true, true), true),
+            ((false, true, true), false),
+            ((false, false, true), false),
+        ];
+        for ((idle, charging, battery_low), expected) in cases {
+            let state = DeviceState {
+                idle,
+                charging,
+                battery_low,
+            };
+            assert_eq!(
+                state.allows_compaction(),
+                expected,
+                "idle={idle} charging={charging} battery_low={battery_low}"
+            );
+        }
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir()

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::compaction::CompactionConfig;
+use crate::compaction::{CompactionConfig, DeviceState};
 use crate::manifest::{Manifest, SSTableMeta, TableId};
 use crate::memtable::MemTable;
 use crate::sstable::{BlockCache, SSTableError, SSTableIter, SSTableReader, SSTableWriter};
@@ -181,6 +181,8 @@ pub struct StorageEngine {
     /// Byte-capped LRU cache of SSTable data blocks, shared by every
     /// reader opened through `reader_for`.
     block_cache: Arc<BlockCache>,
+    /// Last platform-reported device state; gates `maybe_compact`.
+    device_state: DeviceState,
 }
 
 impl StorageEngine {
@@ -256,6 +258,7 @@ impl StorageEngine {
             next_table_id,
             reader_cache: Mutex::new(HashMap::new()),
             block_cache,
+            device_state: DeviceState::default(),
         })
     }
 
@@ -452,6 +455,31 @@ impl StorageEngine {
         }
 
         Ok(stats)
+    }
+
+    /// Update the platform-reported device state (idle / charging /
+    /// battery). Platforms should call this from their power and idle
+    /// callbacks; `maybe_compact` consults the latest state.
+    pub fn set_device_state(&mut self, state: DeviceState) {
+        self.device_state = state;
+    }
+
+    /// The last device state reported via [`Self::set_device_state`].
+    pub fn device_state(&self) -> DeviceState {
+        self.device_state
+    }
+
+    /// Run a compaction pass only if the current device state allows it
+    /// (idle, and not on a low battery unless charging).
+    ///
+    /// Returns `Ok(None)` when compaction was deferred, `Ok(Some(stats))`
+    /// when a pass ran. Use [`Self::compact`] to force a pass regardless
+    /// of device state.
+    pub fn maybe_compact(&mut self) -> Result<Option<CompactionStats>, StorageError> {
+        if !self.device_state.allows_compaction() {
+            return Ok(None);
+        }
+        self.compact().map(Some)
     }
 
     /// Current DB sequence number.
@@ -1358,6 +1386,101 @@ mod tests {
                 Some(format!("v1-{i:04}").into_bytes())
             );
         }
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Build an engine with enough L0 tables to make a compaction pass
+    /// do real work (level_threshold = 2).
+    fn engine_ready_for_compaction(dir: &Path) -> StorageEngine {
+        let config = StorageConfig {
+            memtable_size: 1024 * 1024,
+            compaction: CompactionConfig {
+                level_threshold: 2,
+                max_levels: 3,
+                block_size: 128,
+            },
+            ..default_config()
+        };
+        let mut engine = StorageEngine::open(dir, config).unwrap();
+        for round in 0..2 {
+            for i in 0..20 {
+                engine
+                    .put(
+                        format!("k{i:04}").into_bytes(),
+                        format!("v{round}-{i:04}").into_bytes(),
+                    )
+                    .unwrap();
+            }
+            engine.flush().unwrap();
+        }
+        engine
+    }
+
+    #[test]
+    fn maybe_compact_defers_when_device_busy() {
+        let dir = temp_dir("maybe_compact_busy");
+        let mut engine = engine_ready_for_compaction(&dir);
+
+        // Default state is not idle — compaction must be deferred.
+        assert_eq!(engine.device_state(), DeviceState::default());
+        let l0_before = engine.manifest.tables_at_level(0).len();
+        assert!(l0_before >= 2);
+
+        let result = engine.maybe_compact().unwrap();
+        assert_eq!(result, None);
+        assert_eq!(engine.manifest.tables_at_level(0).len(), l0_before);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn maybe_compact_runs_on_idle_signal() {
+        let dir = temp_dir("maybe_compact_idle");
+        let mut engine = engine_ready_for_compaction(&dir);
+
+        // Simulated platform idle signal.
+        engine.set_device_state(DeviceState {
+            idle: true,
+            charging: false,
+            battery_low: false,
+        });
+
+        let stats = engine.maybe_compact().unwrap().expect("should compact");
+        assert!(stats.tables_merged >= 2);
+        assert!(engine.manifest.tables_at_level(0).is_empty());
+
+        // Data intact after the gated pass.
+        for i in 0..20 {
+            assert_eq!(
+                engine.get(format!("k{i:04}").as_bytes()).unwrap(),
+                Some(format!("v1-{i:04}").into_bytes())
+            );
+        }
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn maybe_compact_defers_on_low_battery_unless_charging() {
+        let dir = temp_dir("maybe_compact_battery");
+        let mut engine = engine_ready_for_compaction(&dir);
+
+        // Idle but low battery and unplugged — deferred.
+        engine.set_device_state(DeviceState {
+            idle: true,
+            charging: false,
+            battery_low: true,
+        });
+        assert_eq!(engine.maybe_compact().unwrap(), None);
+
+        // Plugging in unblocks the pass.
+        engine.set_device_state(DeviceState {
+            idle: true,
+            charging: true,
+            battery_low: true,
+        });
+        assert!(engine.maybe_compact().unwrap().is_some());
 
         fs::remove_dir_all(&dir).ok();
     }
