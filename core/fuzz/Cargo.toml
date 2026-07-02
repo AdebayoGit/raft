@@ -1,0 +1,50 @@
+[package]
+name = "raft-db-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bytes = "1"
+
+[dependencies.raft-db]
+path = ".."
+features = ["ffi"]
+
+# Standalone crate — never part of a parent workspace.
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "wal_entry_decode"
+path = "fuzz_targets/wal_entry_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest_record_decode"
+path = "fuzz_targets/manifest_record_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sstable_reader_open"
+path = "fuzz_targets/sstable_reader_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ffi_json_envelopes"
+path = "fuzz_targets/ffi_json_envelopes.rs"
+test = false
+doc = false
+bench = false
