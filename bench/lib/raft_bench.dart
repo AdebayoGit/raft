@@ -7,6 +7,7 @@ export 'src/adapter.dart';
 export 'src/harness.dart';
 export 'src/model.dart';
 export 'src/results.dart';
+export 'src/adapters/raft_codec.dart';
 export 'src/adapters/raft_adapter.dart';
 export 'src/adapters/hive_adapter.dart';
 export 'src/adapters/sqlite_adapter.dart';

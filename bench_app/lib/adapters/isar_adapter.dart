@@ -69,7 +69,12 @@ class IsarAdapter implements DbAdapter {
   }
 
   @override
-  Future<int> iterateAll() async => _isar!.isarDocs.where().count();
+  Future<int> iterateAll() async {
+    // findAll() materialises every object — the honest "read every record"
+    // contract all adapters follow. (count() would only walk the index.)
+    final all = await _isar!.isarDocs.where().findAll();
+    return all.length;
+  }
 
   @override
   Future<void> bulkUpdate(List<BenchDoc> docs) async {

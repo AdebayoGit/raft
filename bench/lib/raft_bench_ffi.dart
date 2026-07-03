@@ -4,4 +4,5 @@
 library;
 
 export 'src/adapters/raft_adapter.dart';
+export 'src/adapters/raft_codec.dart';
 export 'src/adapters/raft_ffi.dart';

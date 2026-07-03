@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 
 import '../adapter.dart';
 import '../model.dart';
+import 'raft_codec.dart';
 import 'raft_ffi.dart';
 
 /// Drives raft-db through its C ABI collection/document store.
@@ -23,7 +24,7 @@ class RaftAdapter implements DbAdapter {
   RaftAdapter({
     required ffi.DynamicLibrary Function() loadLibrary,
     Availability Function()? availabilityCheck,
-    String versionLabel = '0.1.0 (FFI, collection store)',
+    String versionLabel = '0.1.0 (FFI, batch binary codec)',
   })  : _loadLibrary = loadLibrary,
         _availabilityCheck = availabilityCheck,
         _versionLabel = versionLabel;
@@ -106,75 +107,44 @@ class RaftAdapter implements DbAdapter {
     return utf8.encode(jsonEncode(obj));
   }
 
-  void _putInTxn(ffi.Pointer<ffi.Void> txn, BenchDoc d) {
-    final json = _docJson(d);
-    final ptr = malloc<ffi.Uint8>(json.length);
+  /// One FFI crossing: binary batch encode + `rft_collection_put_many`
+  /// (one transaction, one WAL write, one fsync — same durability contract
+  /// as the per-doc transaction loop it replaces).
+  Future<void> _putManyBinary(List<BenchDoc> docs, {int scoreDelta = 0}) async {
+    final batch = RaftCodec.encodeBatch(docs, scoreDelta: scoreDelta);
+    final ptr = malloc<ffi.Uint8>(batch.length);
     try {
-      ptr.asTypedList(json.length).setAll(0, json);
-      final code = _ffi!.txnPut(txn, _cCollection, ptr, json.length);
+      ptr.asTypedList(batch.length).setAll(0, batch);
+      final code = _ffi!.putMany(_db, _cCollection, ptr, batch.length);
       if (code != RftErr.ok) {
-        throw StateError('rft_transaction_put failed (code $code)');
+        throw StateError('rft_collection_put_many failed (code $code)');
       }
     } finally {
       malloc.free(ptr);
     }
   }
 
-  Future<void> _inTransaction(void Function(ffi.Pointer<ffi.Void> txn) body) async {
-    final outTxn = calloc<ffi.Pointer<ffi.Void>>();
-    try {
-      final beginCode = _ffi!.txnBegin(_db, outTxn);
-      if (beginCode != RftErr.ok) {
-        throw StateError('rft_transaction_begin failed (code $beginCode)');
-      }
-      final txn = outTxn.value;
-      try {
-        body(txn);
-        final commitCode = _ffi!.txnCommit(txn);
-        if (commitCode != RftErr.ok) {
-          throw StateError('rft_transaction_commit failed (code $commitCode)');
-        }
-      } catch (_) {
-        _ffi!.txnRollback(txn);
-        rethrow;
-      }
-    } finally {
-      calloc.free(outTxn);
-    }
-  }
+  @override
+  Future<void> bulkWrite(List<BenchDoc> docs) => _putManyBinary(docs);
 
   @override
-  Future<void> bulkWrite(List<BenchDoc> docs) async {
-    await _inTransaction((txn) {
-      for (final d in docs) {
-        _putInTxn(txn, d);
-      }
-    });
-  }
-
-  @override
-  Future<void> bulkUpdate(List<BenchDoc> docs) async {
-    // Re-put every doc with a bumped score in one transaction.
-    await _inTransaction((txn) {
-      for (final d in docs) {
-        _putInTxn(
-          txn,
-          BenchDoc(id: d.id, name: d.name, score: d.score + 1, payload: d.payload),
-        );
-      }
-    });
-  }
+  Future<void> bulkUpdate(List<BenchDoc> docs) =>
+      _putManyBinary(docs, scoreDelta: 1);
 
   @override
   Future<void> bulkDelete(List<int> ids) async {
-    await _inTransaction((txn) {
-      for (final id in ids) {
-        final code = _ffi!.txnDelete(txn, _cCollection, id);
-        if (code != RftErr.ok) {
-          throw StateError('rft_transaction_delete failed (code $code)');
-        }
+    final ptr = malloc<ffi.Uint64>(ids.length);
+    try {
+      for (var i = 0; i < ids.length; i++) {
+        ptr[i] = ids[i];
       }
-    });
+      final code = _ffi!.deleteMany(_db, _cCollection, ptr, ids.length);
+      if (code != RftErr.ok) {
+        throw StateError('rft_collection_delete_many failed (code $code)');
+      }
+    } finally {
+      malloc.free(ptr);
+    }
   }
 
   @override
@@ -197,32 +167,48 @@ class RaftAdapter implements DbAdapter {
 
   @override
   Future<int> pointReads(List<int> ids) async {
+    // Single-phase get into one reusable buffer: one FFI call and one
+    // engine lookup per read. The document is fully decoded — the same
+    // object materialisation a competitor's `get` performs.
     var found = 0;
+    const cap = 8192;
+    final buf = malloc<ffi.Uint8>(cap);
     final lenPtr = calloc<ffi.UintPtr>();
     try {
+      final view = buf.asTypedList(cap);
+      final bd = ByteData.view(view.buffer, view.offsetInBytes, cap);
       for (final id in ids) {
-        // Phase 1: size query.
-        lenPtr.value = 0;
-        final sizeCode =
-            _ffi!.collectionGet(_db, _cCollection, id, ffi.nullptr, lenPtr);
-        if (sizeCode == RftErr.notFound) continue;
-        if (sizeCode != RftErr.bufferTooSmall && sizeCode != RftErr.ok) {
-          throw StateError('rft_collection_get(size) failed (code $sizeCode)');
-        }
-        final needed = lenPtr.value;
-        final buf = malloc<ffi.Uint8>(needed);
-        try {
-          final code = _ffi!.collectionGet(_db, _cCollection, id, buf, lenPtr);
-          if (code == RftErr.ok) {
-            found++;
-          } else if (code != RftErr.notFound) {
-            throw StateError('rft_collection_get failed (code $code)');
+        lenPtr.value = cap;
+        final code = _ffi!.getBuf(_db, _cCollection, id, buf, lenPtr);
+        if (code == RftErr.ok) {
+          RaftCodec.decodeDoc(view, bd, 0, lenPtr.value);
+          found++;
+        } else if (code == RftErr.bufferTooSmall) {
+          // Oversized doc (rare): retry with an exact buffer.
+          final needed = lenPtr.value;
+          final big = malloc<ffi.Uint8>(needed);
+          try {
+            lenPtr.value = needed;
+            final rc = _ffi!.getBuf(_db, _cCollection, id, big, lenPtr);
+            if (rc == RftErr.ok) {
+              final bigView = big.asTypedList(needed);
+              RaftCodec.decodeDoc(
+                bigView,
+                ByteData.view(bigView.buffer, bigView.offsetInBytes, needed),
+                0,
+                lenPtr.value,
+              );
+              found++;
+            }
+          } finally {
+            malloc.free(big);
           }
-        } finally {
-          malloc.free(buf);
+        } else if (code != RftErr.notFound) {
+          throw StateError('rft_collection_get_buf failed (code $code)');
         }
       }
     } finally {
+      malloc.free(buf);
       calloc.free(lenPtr);
     }
     return found;
@@ -230,32 +216,27 @@ class RaftAdapter implements DbAdapter {
 
   @override
   Future<int> iterateAll() async {
-    // List every id, then materialise each document — the honest "read all
-    // records" equivalent of a competitor's full-table SELECT.
-    final lenPtr = calloc<ffi.UintPtr>();
+    // One engine pass via rft_collection_scan; every document is decoded —
+    // the honest equivalent of a competitor's full findAll().
+    final outBuf = calloc<ffi.Pointer<ffi.Void>>();
     try {
-      final sizeCode =
-          _ffi!.collectionListIds(_db, _cCollection, ffi.nullptr, lenPtr);
-      if (sizeCode != RftErr.bufferTooSmall && sizeCode != RftErr.ok) {
-        throw StateError('rft_collection_list_ids(size) failed ($sizeCode)');
+      final code = _ffi!.scan(_db, _cCollection, outBuf);
+      if (code != RftErr.ok) {
+        throw StateError('rft_collection_scan failed (code $code)');
       }
-      final count = lenPtr.value;
-      if (count == 0) return 0;
-      final idsBuf = malloc<ffi.Uint64>(count);
+      final handle = outBuf.value;
       try {
-        final code =
-            _ffi!.collectionListIds(_db, _cCollection, idsBuf, lenPtr);
-        if (code != RftErr.ok) {
-          throw StateError('rft_collection_list_ids failed (code $code)');
-        }
-        final actual = lenPtr.value;
-        final ids = List<int>.generate(actual, (i) => idsBuf[i]);
-        return pointReads(ids);
+        final len = _ffi!.bufLen(handle);
+        if (len == 0) return 0;
+        final data = _ffi!.bufData(handle);
+        // Decode directly from the native view — the buffer stays alive
+        // until bufFree below, so no copy is needed.
+        return RaftCodec.decodeBatch(data.asTypedList(len)).length;
       } finally {
-        malloc.free(idsBuf);
+        _ffi!.bufFree(handle);
       }
     } finally {
-      calloc.free(lenPtr);
+      calloc.free(outBuf);
     }
   }
 

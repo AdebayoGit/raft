@@ -32,7 +32,17 @@ class RaftFfi {
         txnCommit = lib.lookupFunction<_TxnCommitC, _TxnCommitD>(
             'rft_transaction_commit'),
         txnRollback = lib.lookupFunction<_TxnRollbackC, _TxnRollbackD>(
-            'rft_transaction_rollback');
+            'rft_transaction_rollback'),
+        putMany = lib
+            .lookupFunction<_PutManyC, _PutManyD>('rft_collection_put_many'),
+        deleteMany = lib.lookupFunction<_DeleteManyC, _DeleteManyD>(
+            'rft_collection_delete_many'),
+        scan = lib.lookupFunction<_ScanC, _ScanD>('rft_collection_scan'),
+        getBuf =
+            lib.lookupFunction<_GetBufC, _GetBufD>('rft_collection_get_buf'),
+        bufData = lib.lookupFunction<_BufDataC, _BufDataD>('rft_buf_data'),
+        bufLen = lib.lookupFunction<_BufLenC, _BufLenD>('rft_buf_len'),
+        bufFree = lib.lookupFunction<_BufFreeC, _BufFreeD>('rft_buf_free');
 
   final ffi.Pointer<ffi.Void> Function(ffi.Pointer<Utf8>, ffi.Pointer<ffi.Uint32>) open;
   final void Function(ffi.Pointer<ffi.Void>) close;
@@ -46,6 +56,15 @@ class RaftFfi {
   final int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>, int) txnDelete;
   final int Function(ffi.Pointer<ffi.Void>) txnCommit;
   final void Function(ffi.Pointer<ffi.Void>) txnRollback;
+
+  // Batch / scan hot path (binary codec — see core/src/ffi/codec.rs).
+  final int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>, ffi.Pointer<ffi.Uint8>, int) putMany;
+  final int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>, ffi.Pointer<ffi.Uint64>, int) deleteMany;
+  final int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>, ffi.Pointer<ffi.Pointer<ffi.Void>>) scan;
+  final int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>, int, ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.UintPtr>) getBuf;
+  final ffi.Pointer<ffi.Uint8> Function(ffi.Pointer<ffi.Void>) bufData;
+  final int Function(ffi.Pointer<ffi.Void>) bufLen;
+  final void Function(ffi.Pointer<ffi.Void>) bufFree;
 }
 
 /// Error codes mirror `RftError` in `core/include/raft.h`.
@@ -109,3 +128,32 @@ typedef _TxnCommitD = int Function(ffi.Pointer<ffi.Void>);
 
 typedef _TxnRollbackC = ffi.Void Function(ffi.Pointer<ffi.Void>);
 typedef _TxnRollbackD = void Function(ffi.Pointer<ffi.Void>);
+
+typedef _PutManyC = ffi.Uint32 Function(
+    ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>, ffi.Pointer<ffi.Uint8>, ffi.UintPtr);
+typedef _PutManyD = int Function(
+    ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>, ffi.Pointer<ffi.Uint8>, int);
+
+typedef _DeleteManyC = ffi.Uint32 Function(
+    ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>, ffi.Pointer<ffi.Uint64>, ffi.UintPtr);
+typedef _DeleteManyD = int Function(
+    ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>, ffi.Pointer<ffi.Uint64>, int);
+
+typedef _ScanC = ffi.Uint32 Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>,
+    ffi.Pointer<ffi.Pointer<ffi.Void>>);
+typedef _ScanD = int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>,
+    ffi.Pointer<ffi.Pointer<ffi.Void>>);
+
+typedef _GetBufC = ffi.Uint32 Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>,
+    ffi.Uint64, ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.UintPtr>);
+typedef _GetBufD = int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>, int,
+    ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.UintPtr>);
+
+typedef _BufDataC = ffi.Pointer<ffi.Uint8> Function(ffi.Pointer<ffi.Void>);
+typedef _BufDataD = ffi.Pointer<ffi.Uint8> Function(ffi.Pointer<ffi.Void>);
+
+typedef _BufLenC = ffi.UintPtr Function(ffi.Pointer<ffi.Void>);
+typedef _BufLenD = int Function(ffi.Pointer<ffi.Void>);
+
+typedef _BufFreeC = ffi.Void Function(ffi.Pointer<ffi.Void>);
+typedef _BufFreeD = void Function(ffi.Pointer<ffi.Void>);
