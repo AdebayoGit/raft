@@ -390,3 +390,41 @@ final class RaftCollectionScopingTests: XCTestCase {
         XCTAssertNotEqual(defaultBytes, isoBytes)
     }
 }
+
+// MARK: - Thread Affinity Tests (F7e)
+
+final class ThreadAffinityTests: XCTestCase {
+
+    /// The native core fires observer callbacks on a background runtime
+    /// thread — never the registering thread. The `AsyncStream` bridge
+    /// must marshal those events safely into Swift concurrency, including
+    /// consumers isolated to the main actor.
+    func testObserveEventsAreDeliveredToAMainActorConsumer() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raft-thread-affinity-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+
+        let db = try await RaftDB.open(path: dir)
+        let stream = db.observe(collection: "users")
+
+        let consumer = Task { @MainActor () -> MutationEvent? in
+            for await event in stream {
+                // Consumption hops onto the main actor regardless of
+                // which native thread produced the event.
+                XCTAssertTrue(Thread.isMainThread)
+                return event
+            }
+            return nil
+        }
+
+        // Let the subscription task register before mutating.
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let doc = Data(#"{"id":1,"fields":{}}"#.utf8)
+        try await db.collectionPut("users", document: doc)
+
+        let event = await consumer.value
+        XCTAssertEqual(event?.collection, "users")
+        XCTAssertEqual(event?.mutationType, .insert)
+        db.close()
+    }
+}

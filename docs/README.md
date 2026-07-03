@@ -22,6 +22,7 @@ These cross-platform docs go deeper on each individual surface, with more exampl
 | Observation | [observation.md](observation.md) | Live mutation events and query diffs |
 | Errors | [errors.md](errors.md) | The unified error model and per-platform mappings |
 | Memory ownership | [memory-ownership.md](memory-ownership.md) | Who allocates and frees each FFI handle, per binding |
+| Thread affinity | [threading.md](threading.md) | Which thread callbacks fire on and how bindings marshal them |
 | Sync (merge surface) | [sync.md](sync.md) | HLCs, CRDTs, `SyncAuthority`, `ConflictStrategy`, peer integration |
 
 ## Conventions used in these docs

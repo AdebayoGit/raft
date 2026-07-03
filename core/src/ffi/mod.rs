@@ -1109,6 +1109,131 @@ mod tests {
         }
     }
 
+    /// Thread-affinity contract (F7e): mutation-observer callbacks fire
+    /// on a runtime worker thread, never on the registering thread.
+    #[test]
+    fn observe_callbacks_fire_off_registering_thread() {
+        use std::os::raw::c_void;
+        use std::sync::Mutex;
+        use std::thread::ThreadId;
+
+        static THREADS: std::sync::OnceLock<Mutex<Vec<ThreadId>>> = std::sync::OnceLock::new();
+
+        fn threads() -> &'static Mutex<Vec<ThreadId>> {
+            THREADS.get_or_init(|| Mutex::new(Vec::new()))
+        }
+
+        unsafe extern "C" fn callback(_event: *const c_char, _user_data: *mut c_void) {
+            threads().lock().unwrap().push(std::thread::current().id());
+        }
+
+        unsafe {
+            let (db, dir) = open_test_db("observe_thread");
+            let coll = CString::new("users").unwrap();
+            let registering_thread = std::thread::current().id();
+
+            let mut sub_id = 0u64;
+            assert_eq!(
+                rft_observe(db, coll.as_ptr(), callback, ptr::null_mut(), &mut sub_id),
+                RftError::Ok
+            );
+
+            let json = r#"{"id":1,"fields":{}}"#;
+            rft_collection_put(db, coll.as_ptr(), json.as_ptr(), json.len());
+            std::thread::sleep(std::time::Duration::from_millis(150));
+
+            {
+                let captured = threads().lock().unwrap();
+                assert!(!captured.is_empty(), "expected at least one event");
+                for tid in captured.iter() {
+                    assert_ne!(
+                        *tid, registering_thread,
+                        "observer callback must fire on a runtime worker \
+                         thread, not the registering thread"
+                    );
+                }
+            }
+
+            assert_eq!(rft_unobserve(db, sub_id), RftError::Ok);
+            rft_close(db);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// Thread-affinity contract (F7e): the live-query initial snapshot
+    /// fires synchronously on the registering thread; subsequent diffs
+    /// fire on a runtime worker thread.
+    #[test]
+    fn observe_query_snapshot_sync_then_diffs_off_thread() {
+        use std::os::raw::c_void;
+        use std::sync::Mutex;
+        use std::thread::ThreadId;
+
+        static THREADS: std::sync::OnceLock<Mutex<Vec<ThreadId>>> = std::sync::OnceLock::new();
+
+        fn threads() -> &'static Mutex<Vec<ThreadId>> {
+            THREADS.get_or_init(|| Mutex::new(Vec::new()))
+        }
+
+        unsafe extern "C" fn callback(_json: *const c_char, _user_data: *mut c_void) {
+            threads().lock().unwrap().push(std::thread::current().id());
+        }
+
+        unsafe {
+            let (db, dir) = open_test_db("observe_query_thread");
+            let coll = CString::new("users").unwrap();
+            let registering_thread = std::thread::current().id();
+
+            let doc = r#"{"id":1,"fields":{"age":{"Int":30}}}"#;
+            rft_collection_put(db, coll.as_ptr(), doc.as_ptr(), doc.len());
+
+            let q = r#"{"collection":"users"}"#;
+            let mut sub_id = 0u64;
+            assert_eq!(
+                rft_observe_query(
+                    db,
+                    q.as_ptr(),
+                    q.len(),
+                    callback,
+                    ptr::null_mut(),
+                    &mut sub_id,
+                ),
+                RftError::Ok
+            );
+
+            // The initial snapshot is delivered synchronously on the
+            // registering thread, before rft_observe_query returns.
+            {
+                let captured = threads().lock().unwrap();
+                assert_eq!(captured.len(), 1, "expected exactly the snapshot");
+                assert_eq!(
+                    captured[0], registering_thread,
+                    "initial snapshot must fire on the registering thread"
+                );
+            }
+
+            // A mutation-triggered diff arrives on a worker thread.
+            let doc2 = r#"{"id":2,"fields":{"age":{"Int":40}}}"#;
+            rft_collection_put(db, coll.as_ptr(), doc2.as_ptr(), doc2.len());
+            std::thread::sleep(std::time::Duration::from_millis(300));
+
+            {
+                let captured = threads().lock().unwrap();
+                assert!(captured.len() >= 2, "expected a diff after the mutation");
+                for tid in captured.iter().skip(1) {
+                    assert_ne!(
+                        *tid, registering_thread,
+                        "live-query diffs must fire on a runtime worker thread"
+                    );
+                }
+            }
+
+            assert_eq!(rft_unobserve(db, sub_id), RftError::Ok);
+            rft_close(db);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
     /// Single test covering the whole Dart-port surface so the global
     /// `POST_COBJECT` state is never raced by parallel test threads.
     #[test]
