@@ -8,10 +8,12 @@
 mod counter;
 mod lww;
 mod orset;
+mod stability;
 
 pub use counter::Counter;
 pub use lww::LwwRegister;
 pub use orset::OrSet;
+pub use stability::StabilityFrontier;
 
 /// Deterministic merge of two replicas of the same logical value.
 ///

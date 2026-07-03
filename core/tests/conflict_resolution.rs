@@ -139,7 +139,7 @@ fn crdt_or_set_concurrent_add_remove() {
     remote.add("banana", DEVICE_B, ts(102, 0));
     remote.add("cherry", DEVICE_B, ts(103, 0));
     // Concurrently remove apple on remote.
-    remote.remove(&"apple");
+    remote.remove(&"apple", ts(104, 0));
 
     local.merge(&remote);
 

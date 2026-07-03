@@ -7,7 +7,7 @@
 
 use proptest::prelude::*;
 
-use raftdb::crdt::{Counter, LwwRegister, Merge, OrSet};
+use raftdb::crdt::{Counter, LwwRegister, Merge, OrSet, StabilityFrontier};
 use raftdb::wal::HlcTimestamp;
 
 fn ts(physical: u64, logical: u16) -> HlcTimestamp {
@@ -41,6 +41,7 @@ enum SetOp {
     },
     Remove {
         element: u8,
+        at: HlcTimestamp,
     },
 }
 
@@ -51,7 +52,10 @@ fn set_op_strategy() -> impl Strategy<Value = SetOp> {
             device,
             at: ts(p, l),
         }),
-        (0..16u8).prop_map(|element| SetOp::Remove { element }),
+        (0..16u8, 0..100u64, 0..4u16).prop_map(|(element, p, l)| SetOp::Remove {
+            element,
+            at: ts(p, l),
+        }),
     ]
 }
 
@@ -72,8 +76,8 @@ fn orset_from_ops(ops: &[SetOp]) -> OrSet<u8> {
                     set.add(*element, *device, *at);
                 }
             }
-            SetOp::Remove { element } => {
-                set.remove(element);
+            SetOp::Remove { element, at } => {
+                set.remove(element, *at);
             }
         }
     }
@@ -167,7 +171,7 @@ proptest! {
 
         // Replica A removes; replica B concurrently re-adds with a fresh tag.
         let mut a = shared.clone();
-        a.remove(&element);
+        a.remove(&element, ts(p + 1, 0));
         let mut b = shared;
         b.add(element, device_b, ts(p + 1, 0));
 
@@ -187,7 +191,7 @@ proptest! {
         stale.add(element, device, ts(p, 0));
 
         let mut current = stale.clone();
-        current.remove(&element);
+        current.remove(&element, ts(p + 1, 0));
 
         prop_assert!(!merged(&current, &stale).contains(&element));
         prop_assert!(!merged(&stale, &current).contains(&element));
@@ -203,4 +207,127 @@ proptest! {
         prop_assert_eq!(ab.timestamp(), ba.timestamp());
         prop_assert_eq!(ab.device_id(), ba.device_id());
     }
+}
+
+// ── Tombstone GC under long-running churn (C6e) ────────────────────────
+
+/// Long-running churn: N devices repeatedly add/remove elements, sync
+/// all-to-all each round, then GC against the causal-stability frontier.
+///
+/// Acceptance (work plan 3.2): tombstone metadata stays bounded (drops to
+/// zero after every full sync + GC round) and convergence is preserved
+/// post-GC.
+#[test]
+fn orset_gc_bounds_tombstones_under_churn() {
+    const DEVICES: usize = 4;
+    const ROUNDS: u64 = 50;
+    const ELEMENTS: u8 = 8;
+
+    let mut replicas: Vec<OrSet<u8>> = vec![OrSet::new(); DEVICES];
+    let mut frontier = StabilityFrontier::new();
+
+    for round in 1..=ROUNDS {
+        // Tags minted this round use logical components 0..DEVICES, so an
+        // ack covering the whole round sits at logical = DEVICES.
+        let now = ts(round * 100, DEVICES as u16);
+
+        // Each device churns: adds one element, removes another.
+        for (i, replica) in replicas.iter_mut().enumerate() {
+            let device = (i + 1) as u128;
+            let add_elem = ((round as usize + i) % ELEMENTS as usize) as u8;
+            let rm_elem = ((round as usize + i + 3) % ELEMENTS as usize) as u8;
+            replica.add(add_elem, device, ts(round * 100, i as u16));
+            replica.remove(&rm_elem, ts(round * 100, i as u16));
+        }
+
+        // Full all-to-all sync: everyone observes everything this round.
+        for i in 0..DEVICES {
+            for j in 0..DEVICES {
+                if i != j {
+                    let other = replicas[j].clone();
+                    replicas[i].merge(&other);
+                }
+            }
+        }
+        // Second pass so early mergers pick up state that later replicas
+        // only produced during the first pass.
+        let full = replicas
+            .iter()
+            .skip(1)
+            .fold(replicas[0].clone(), |mut acc, r| {
+                acc.merge(r);
+                acc
+            });
+        for replica in &mut replicas {
+            replica.merge(&full);
+        }
+
+        // Everyone has applied everything up to `now` — record the acks
+        // and GC at the frontier.
+        for i in 0..DEVICES {
+            frontier.observe((i + 1) as u128, now);
+        }
+        let stable = frontier.frontier().expect("all devices tracked");
+        for replica in &mut replicas {
+            replica.gc(stable);
+        }
+
+        // Log size bounded: after a full sync + GC every tombstone is
+        // causally stable, so none remain.
+        for (i, replica) in replicas.iter().enumerate() {
+            assert_eq!(
+                replica.tombstone_count(),
+                0,
+                "round {round}: replica {i} retained tombstones after full sync + gc"
+            );
+        }
+
+        // Convergence preserved post-GC.
+        for replica in &replicas[1..] {
+            assert_eq!(replica, &replicas[0], "round {round}: replicas diverged");
+        }
+    }
+}
+
+/// An offline device must hold the frontier back so GC never discards a
+/// tombstone the laggard has not observed — no resurrection on rejoin.
+#[test]
+fn orset_gc_offline_device_prevents_unsafe_pruning() {
+    let mut a = OrSet::new();
+    a.add(1u8, 1, ts(100, 0));
+
+    // Device 3 syncs the add, then goes offline holding the live tag.
+    let offline = a.clone();
+
+    let mut frontier = StabilityFrontier::new();
+    frontier.observe(1, ts(100, 0));
+    frontier.observe(2, ts(100, 0));
+    frontier.observe(3, ts(100, 0)); // last ack before going dark
+
+    // Devices 1 and 2 continue: remove the element at ts(200), keep acking.
+    a.remove(&1u8, ts(200, 0));
+    let mut b = a.clone();
+    frontier.observe(1, ts(500, 0));
+    frontier.observe(2, ts(500, 0));
+
+    // Frontier is pinned at device 3's last ack — below the remove.
+    let stable = frontier.frontier().unwrap();
+    assert_eq!(stable, ts(100, 0));
+    assert_eq!(a.gc(stable), 0, "tombstone above frontier must survive");
+    assert_eq!(a.tombstone_count(), 1);
+
+    // Offline device rejoins with its stale live tag: no resurrection.
+    a.merge(&offline);
+    b.merge(&offline);
+    assert!(
+        !a.contains(&1u8),
+        "rejoin must not resurrect removed element"
+    );
+    assert!(!b.contains(&1u8));
+
+    // Once the laggard acks past the remove, GC completes.
+    frontier.observe(3, ts(500, 0));
+    let stable = frontier.frontier().unwrap();
+    assert_eq!(a.gc(stable), 1);
+    assert_eq!(a.tombstone_count(), 0);
 }
