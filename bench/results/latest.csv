@@ -1,0 +1,37 @@
+engine,version,workload,status,op_count,median_micros,best_micros,ops_per_sec,note
+raft-db,"0.1.0 (FFI, collection store)",bulk_write,ok,10000,99994,98974,100006.0,
+raft-db,"0.1.0 (FFI, collection store)",bulk_update,ok,10000,113276,111845,88280.0,
+raft-db,"0.1.0 (FFI, collection store)",bulk_delete,ok,10000,46446,44619,215303.8,
+raft-db,"0.1.0 (FFI, collection store)",durable_writes,ok,500,9614236,9584042,52.0,
+raft-db,"0.1.0 (FFI, collection store)",point_read,ok,10000,34931,33192,286278.7,
+raft-db,"0.1.0 (FFI, collection store)",iterate_all,ok,10000,30423,28625,328698.7,
+SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,bulk_write,ok,10000,115493,104492,86585.3,
+SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,bulk_update,ok,10000,94242,91388,106109.8,
+SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,bulk_delete,ok,10000,71796,64069,139283.5,
+SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,durable_writes,ok,500,406936,400593,1228.7,
+SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,point_read,ok,10000,783769,774607,12758.9,
+SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,iterate_all,ok,10000,9168,8933,1090750.4,
+Hive,2.2.3 (pure Dart),bulk_write,ok,10000,53184,33092,188026.5,
+Hive,2.2.3 (pure Dart),bulk_update,ok,10000,62030,46108,161212.3,
+Hive,2.2.3 (pure Dart),bulk_delete,ok,10000,9430,8751,1060445.4,
+Hive,2.2.3 (pure Dart),durable_writes,ok,500,97386,93350,5134.2,
+Hive,2.2.3 (pure Dart),point_read,ok,10000,4946,4793,2021835.8,
+Hive,2.2.3 (pure Dart),iterate_all,ok,10000,190,162,52631578.9,
+Isar,isar_community 3.x (Dart VM),bulk_write,ok,10000,46412,38821,215461.5,
+Isar,isar_community 3.x (Dart VM),bulk_update,ok,10000,40457,39042,247176.0,
+Isar,isar_community 3.x (Dart VM),bulk_delete,ok,10000,32425,29896,308404.0,
+Isar,isar_community 3.x (Dart VM),durable_writes,ok,500,9935867,9869995,50.3,
+Isar,isar_community 3.x (Dart VM),point_read,ok,10000,644454,630156,15517.0,
+Isar,isar_community 3.x (Dart VM),iterate_all,ok,10000,615,567,16260162.6,
+ObjectBox,objectbox 4.0.x (Dart VM),bulk_write,skipped,0,,,,libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead
+ObjectBox,objectbox 4.0.x (Dart VM),durable_writes,skipped,0,,,,libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead
+ObjectBox,objectbox 4.0.x (Dart VM),point_read,skipped,0,,,,libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead
+ObjectBox,objectbox 4.0.x (Dart VM),iterate_all,skipped,0,,,,libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead
+ObjectBox,objectbox 4.0.x (Dart VM),bulk_update,skipped,0,,,,libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead
+ObjectBox,objectbox 4.0.x (Dart VM),bulk_delete,skipped,0,,,,libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead
+Realm,not run here,bulk_write,skipped,0,,,,native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)
+Realm,not run here,durable_writes,skipped,0,,,,native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)
+Realm,not run here,point_read,skipped,0,,,,native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)
+Realm,not run here,iterate_all,skipped,0,,,,native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)
+Realm,not run here,bulk_update,skipped,0,,,,native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)
+Realm,not run here,bulk_delete,skipped,0,,,,native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)

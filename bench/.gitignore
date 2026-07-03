@@ -1,0 +1,8 @@
+.dart_tool/
+.packages
+build/
+# Keep results/latest.* as the published results; ignore per-run snapshots.
+results/run-*.json
+results/all6-*.json
+results/*.md
+results/*.html

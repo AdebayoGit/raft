@@ -1,0 +1,505 @@
+{
+  "timestamp": "2026-07-03T17:51:32.726815Z",
+  "platform": "macos Version 26.5.1 (Build 25F80) (3.8.1)",
+  "config": {
+    "recordCount": 10000,
+    "durableCount": 500,
+    "readCount": 10000,
+    "payloadBytes": 100,
+    "writeSamples": 3,
+    "readSamples": 5,
+    "seed": 1
+  },
+  "engines": [
+    {
+      "engine": "raft-db",
+      "version": "0.1.0 (FFI, collection store)",
+      "durabilityNote": "Every commit fsyncs (SyncMode::Always, F_FULLFSYNC) — no FFI knob to disable it; the only engine here that flushes to stable storage by default.",
+      "results": [
+        {
+          "workload": "bulk_write",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            145817,
+            99994,
+            98974
+          ],
+          "medianMicros": 99994,
+          "bestMicros": 98974,
+          "opsPerSec": 100006.0003600216
+        },
+        {
+          "workload": "bulk_update",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            113276,
+            111845,
+            113855
+          ],
+          "medianMicros": 113276,
+          "bestMicros": 111845,
+          "opsPerSec": 88279.95338818461
+        },
+        {
+          "workload": "bulk_delete",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            47232,
+            44619,
+            46446
+          ],
+          "medianMicros": 46446,
+          "bestMicros": 44619,
+          "opsPerSec": 215303.79365284415
+        },
+        {
+          "workload": "durable_writes",
+          "status": "ok",
+          "opCount": 500,
+          "samplesMicros": [
+            9584042,
+            9614236,
+            9749841
+          ],
+          "medianMicros": 9614236,
+          "bestMicros": 9584042,
+          "opsPerSec": 52.006212454114916
+        },
+        {
+          "workload": "point_read",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            42505,
+            35242,
+            34369,
+            34931,
+            33192
+          ],
+          "medianMicros": 34931,
+          "bestMicros": 33192,
+          "opsPerSec": 286278.6636511981
+        },
+        {
+          "workload": "iterate_all",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            36059,
+            30423,
+            31135,
+            28915,
+            28625
+          ],
+          "medianMicros": 30423,
+          "bestMicros": 28625,
+          "opsPerSec": 328698.6819182855
+        }
+      ]
+    },
+    {
+      "engine": "SQLite (sqflite_ffi)",
+      "version": "bundled sqlite via sqflite_common_ffi",
+      "durabilityNote": "WAL, synchronous=FULL, fullfsync=ON — durable group fsyncs per commit, matched to raft.",
+      "results": [
+        {
+          "workload": "bulk_write",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            220538,
+            115493,
+            104492
+          ],
+          "medianMicros": 115493,
+          "bestMicros": 104492,
+          "opsPerSec": 86585.33417609725
+        },
+        {
+          "workload": "bulk_update",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            118609,
+            94242,
+            91388
+          ],
+          "medianMicros": 94242,
+          "bestMicros": 91388,
+          "opsPerSec": 106109.80242354788
+        },
+        {
+          "workload": "bulk_delete",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            87889,
+            64069,
+            71796
+          ],
+          "medianMicros": 71796,
+          "bestMicros": 64069,
+          "opsPerSec": 139283.52554459858
+        },
+        {
+          "workload": "durable_writes",
+          "status": "ok",
+          "opCount": 500,
+          "samplesMicros": [
+            435574,
+            400593,
+            406936
+          ],
+          "medianMicros": 406936,
+          "bestMicros": 400593,
+          "opsPerSec": 1228.6944384374938
+        },
+        {
+          "workload": "point_read",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            909172,
+            809298,
+            778691,
+            783769,
+            774607
+          ],
+          "medianMicros": 783769,
+          "bestMicros": 774607,
+          "opsPerSec": 12758.861348177843
+        },
+        {
+          "workload": "iterate_all",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            9056,
+            11668,
+            9168,
+            9437,
+            8933
+          ],
+          "medianMicros": 9168,
+          "bestMicros": 8933,
+          "opsPerSec": 1090750.4363001743
+        }
+      ]
+    },
+    {
+      "engine": "Hive",
+      "version": "2.2.3 (pure Dart)",
+      "durabilityNote": "Buffered: writes append to the box file; no fsync per commit even on flush(). Fast but not crash-durable per write.",
+      "results": [
+        {
+          "workload": "bulk_write",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            85895,
+            53184,
+            33092
+          ],
+          "medianMicros": 53184,
+          "bestMicros": 33092,
+          "opsPerSec": 188026.47412755716
+        },
+        {
+          "workload": "bulk_update",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            77566,
+            62030,
+            46108
+          ],
+          "medianMicros": 62030,
+          "bestMicros": 46108,
+          "opsPerSec": 161212.31662098985
+        },
+        {
+          "workload": "bulk_delete",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            15642,
+            9430,
+            8751
+          ],
+          "medianMicros": 9430,
+          "bestMicros": 8751,
+          "opsPerSec": 1060445.3870625664
+        },
+        {
+          "workload": "durable_writes",
+          "status": "ok",
+          "opCount": 500,
+          "samplesMicros": [
+            97386,
+            98120,
+            93350
+          ],
+          "medianMicros": 97386,
+          "bestMicros": 93350,
+          "opsPerSec": 5134.208202411024
+        },
+        {
+          "workload": "point_read",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            5761,
+            4793,
+            4946,
+            4799,
+            5128
+          ],
+          "medianMicros": 4946,
+          "bestMicros": 4793,
+          "opsPerSec": 2021835.8269308533
+        },
+        {
+          "workload": "iterate_all",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            1115,
+            575,
+            190,
+            164,
+            162
+          ],
+          "medianMicros": 190,
+          "bestMicros": 162,
+          "opsPerSec": 52631578.94736842
+        }
+      ]
+    },
+    {
+      "engine": "Isar",
+      "version": "isar_community 3.x (Dart VM)",
+      "durabilityNote": "Native mmap engine; write transactions are durable.",
+      "results": [
+        {
+          "workload": "bulk_write",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            67318,
+            46412,
+            38821
+          ],
+          "medianMicros": 46412,
+          "bestMicros": 38821,
+          "opsPerSec": 215461.5185727829
+        },
+        {
+          "workload": "bulk_update",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            40891,
+            40457,
+            39042
+          ],
+          "medianMicros": 40457,
+          "bestMicros": 39042,
+          "opsPerSec": 247176.0140395976
+        },
+        {
+          "workload": "bulk_delete",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            34117,
+            29896,
+            32425
+          ],
+          "medianMicros": 32425,
+          "bestMicros": 29896,
+          "opsPerSec": 308404.0092521203
+        },
+        {
+          "workload": "durable_writes",
+          "status": "ok",
+          "opCount": 500,
+          "samplesMicros": [
+            10051578,
+            9869995,
+            9935867
+          ],
+          "medianMicros": 9935867,
+          "bestMicros": 9869995,
+          "opsPerSec": 50.322734795061166
+        },
+        {
+          "workload": "point_read",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            644454,
+            630156,
+            642361,
+            753621,
+            745439
+          ],
+          "medianMicros": 644454,
+          "bestMicros": 630156,
+          "opsPerSec": 15517.011299487629
+        },
+        {
+          "workload": "iterate_all",
+          "status": "ok",
+          "opCount": 10000,
+          "samplesMicros": [
+            827,
+            679,
+            615,
+            575,
+            567
+          ],
+          "medianMicros": 615,
+          "bestMicros": 567,
+          "opsPerSec": 16260162.601626016
+        }
+      ]
+    },
+    {
+      "engine": "ObjectBox",
+      "version": "objectbox 4.0.x (Dart VM)",
+      "durabilityNote": "Native object store; putMany is one transaction, single put is durable.",
+      "results": [
+        {
+          "workload": "bulk_write",
+          "status": "skipped",
+          "opCount": 0,
+          "samplesMicros": [],
+          "medianMicros": null,
+          "bestMicros": null,
+          "opsPerSec": null,
+          "note": "libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead"
+        },
+        {
+          "workload": "durable_writes",
+          "status": "skipped",
+          "opCount": 0,
+          "samplesMicros": [],
+          "medianMicros": null,
+          "bestMicros": null,
+          "opsPerSec": null,
+          "note": "libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead"
+        },
+        {
+          "workload": "point_read",
+          "status": "skipped",
+          "opCount": 0,
+          "samplesMicros": [],
+          "medianMicros": null,
+          "bestMicros": null,
+          "opsPerSec": null,
+          "note": "libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead"
+        },
+        {
+          "workload": "iterate_all",
+          "status": "skipped",
+          "opCount": 0,
+          "samplesMicros": [],
+          "medianMicros": null,
+          "bestMicros": null,
+          "opsPerSec": null,
+          "note": "libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead"
+        },
+        {
+          "workload": "bulk_update",
+          "status": "skipped",
+          "opCount": 0,
+          "samplesMicros": [],
+          "medianMicros": null,
+          "bestMicros": null,
+          "opsPerSec": null,
+          "note": "libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead"
+        },
+        {
+          "workload": "bulk_delete",
+          "status": "skipped",
+          "opCount": 0,
+          "samplesMicros": [],
+          "medianMicros": null,
+          "bestMicros": null,
+          "opsPerSec": null,
+          "note": "libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead"
+        }
+      ]
+    },
+    {
+      "engine": "Realm",
+      "version": "not run here",
+      "durabilityNote": "C++ MVCC core; write() commits are durable.",
+      "results": [
+        {
+          "workload": "bulk_write",
+          "status": "skipped",
+          "opCount": 0,
+          "samplesMicros": [],
+          "medianMicros": null,
+          "bestMicros": null,
+          "opsPerSec": null,
+          "note": "native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)"
+        },
+        {
+          "workload": "durable_writes",
+          "status": "skipped",
+          "opCount": 0,
+          "samplesMicros": [],
+          "medianMicros": null,
+          "bestMicros": null,
+          "opsPerSec": null,
+          "note": "native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)"
+        },
+        {
+          "workload": "point_read",
+          "status": "skipped",
+          "opCount": 0,
+          "samplesMicros": [],
+          "medianMicros": null,
+          "bestMicros": null,
+          "opsPerSec": null,
+          "note": "native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)"
+        },
+        {
+          "workload": "iterate_all",
+          "status": "skipped",
+          "opCount": 0,
+          "samplesMicros": [],
+          "medianMicros": null,
+          "bestMicros": null,
+          "opsPerSec": null,
+          "note": "native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)"
+        },
+        {
+          "workload": "bulk_update",
+          "status": "skipped",
+          "opCount": 0,
+          "samplesMicros": [],
+          "medianMicros": null,
+          "bestMicros": null,
+          "opsPerSec": null,
+          "note": "native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)"
+        },
+        {
+          "workload": "bulk_delete",
+          "status": "skipped",
+          "opCount": 0,
+          "samplesMicros": [],
+          "medianMicros": null,
+          "bestMicros": null,
+          "opsPerSec": null,
+          "note": "native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)"
+        }
+      ]
+    }
+  ]
+}

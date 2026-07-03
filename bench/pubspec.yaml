@@ -1,0 +1,23 @@
+name: raft_bench
+description: >-
+  Cross-database benchmark harness comparing raft-db against the databases a
+  Flutter developer actually reaches for, driven through each engine's real
+  Dart API. Runs headless under the standalone Dart VM and shares its adapter
+  logic with the Flutter benchmark app.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  ffi: ^2.1.0
+  path: ^1.9.0
+  args: ^2.5.0
+  collection: ^1.18.0
+  # Reliable, no-codegen engines — always in the harness.
+  hive: ^2.2.3
+  sqflite_common_ffi: ^2.3.3
+
+dev_dependencies:
+  lints: ^4.0.0
