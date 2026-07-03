@@ -190,13 +190,12 @@ impl Wal {
         self.preallocate = bytes;
     }
 
-    /// Append a single entry to the log, then apply the durability policy.
-    ///
-    /// With [`SyncMode::Always`] (the default) the entry is fsynced to
-    /// durable storage before this returns.
-    pub fn append(&mut self, entry: &WalEntry) -> Result<(), WalError> {
-        let encoded = match &self.cipher {
-            None => entry.encode_to_vec(),
+    /// Encode one entry into its on-disk representation: raw entry bytes
+    /// in plaintext mode, `[len: u32][nonce||ct||tag]` framing when a
+    /// cipher is set.
+    fn encode_for_disk(&self, entry: &WalEntry) -> Result<Vec<u8>, WalError> {
+        match &self.cipher {
+            None => Ok(entry.encode_to_vec()),
             Some(cipher) => {
                 let sealed = cipher
                     .seal(&entry.encode_to_vec())
@@ -204,9 +203,14 @@ impl Wal {
                 let mut framed = Vec::with_capacity(4 + sealed.len());
                 framed.extend_from_slice(&(sealed.len() as u32).to_be_bytes());
                 framed.extend_from_slice(&sealed);
-                framed
+                Ok(framed)
             }
-        };
+        }
+    }
+
+    /// Write pre-encoded bytes at the logical end of the log, then apply
+    /// the durability policy counting `appends` logical entries.
+    fn write_at_end(&mut self, encoded: &[u8], appends: u32) -> Result<(), WalError> {
         let end = self.write_pos + encoded.len() as u64;
 
         // Grow the file ahead of the write position in chunks.
@@ -217,10 +221,10 @@ impl Wal {
         }
 
         self.file.seek(SeekFrom::Start(self.write_pos))?;
-        self.file.write_all(&encoded)?;
+        self.file.write_all(encoded)?;
         self.write_pos = end;
         self.capacity = self.capacity.max(end);
-        self.appends_since_sync = self.appends_since_sync.saturating_add(1);
+        self.appends_since_sync = self.appends_since_sync.saturating_add(appends);
 
         match self.sync_mode {
             SyncMode::Always => self.sync()?,
@@ -232,6 +236,38 @@ impl Wal {
             SyncMode::Off => {}
         }
         Ok(())
+    }
+
+    /// Append a single entry to the log, then apply the durability policy.
+    ///
+    /// With [`SyncMode::Always`] (the default) the entry is fsynced to
+    /// durable storage before this returns.
+    pub fn append(&mut self, entry: &WalEntry) -> Result<(), WalError> {
+        let encoded = self.encode_for_disk(entry)?;
+        self.write_at_end(&encoded, 1)
+    }
+
+    /// Append many entries with a single positioned write and a single
+    /// durability decision (S7f — group commit).
+    ///
+    /// Under [`SyncMode::Always`] the whole batch is made durable by
+    /// *one* fsync instead of one per entry, amortising the dominant
+    /// cost of the write path. The on-disk encoding is identical to
+    /// per-entry appends, so replay and recovery are unaffected. Under
+    /// [`SyncMode::EveryN`] the batch counts as `entries.len()` appends.
+    ///
+    /// Note: if the process crashes mid-batch, the torn tail is
+    /// truncated by [`Wal::recover`] exactly as with single appends —
+    /// callers must not report success until this returns.
+    pub fn append_batch(&mut self, entries: &[WalEntry]) -> Result<(), WalError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut encoded = Vec::new();
+        for entry in entries {
+            encoded.extend_from_slice(&self.encode_for_disk(entry)?);
+        }
+        self.write_at_end(&encoded, entries.len() as u32)
     }
 
     /// Replay the entire log, yielding entries in append order.
@@ -585,6 +621,98 @@ mod tests {
         assert_eq!(wal.appends_since_sync, 10);
         wal.sync().unwrap();
         assert_eq!(wal.appends_since_sync, 0);
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn append_batch_replays_in_order() {
+        let path = temp_wal_path("batch_replay");
+        let _ = fs::remove_file(&path);
+
+        let batch: Vec<WalEntry> = (0..10)
+            .map(|i| make_entry(100 + i, i as u16, format!("batched-{i}").as_bytes()))
+            .collect();
+        {
+            let mut wal = Wal::open(&path).unwrap();
+            wal.append(&make_entry(1, 0, b"before")).unwrap();
+            wal.append_batch(&batch).unwrap();
+            wal.append(&make_entry(999, 0, b"after")).unwrap();
+        }
+
+        let wal = Wal::open(&path).unwrap();
+        let out: Vec<WalEntry> = wal
+            .replay()
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(out.len(), 12);
+        assert_eq!(out[0].payload, b"before");
+        assert_eq!(&out[1..11], batch.as_slice());
+        assert_eq!(out[11].payload, b"after");
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn append_batch_empty_is_noop() {
+        let path = temp_wal_path("batch_empty");
+        let _ = fs::remove_file(&path);
+
+        let mut wal = Wal::open_with_mode(&path, SyncMode::Off).unwrap();
+        wal.append_batch(&[]).unwrap();
+        assert_eq!(wal.appends_since_sync, 0);
+        assert!(wal.replay().unwrap().next().is_none());
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn append_batch_counts_entries_for_every_n() {
+        let path = temp_wal_path("batch_every_n");
+        let _ = fs::remove_file(&path);
+
+        let mut wal = Wal::open_with_mode(&path, SyncMode::EveryN(5)).unwrap();
+        let batch: Vec<WalEntry> = (0..3).map(|i| make_entry(i, 0, b"x")).collect();
+
+        wal.append_batch(&batch).unwrap();
+        assert_eq!(wal.appends_since_sync, 3, "batch counts as 3 appends");
+
+        wal.append_batch(&batch).unwrap();
+        assert_eq!(wal.appends_since_sync, 0, "crossing N must sync");
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn append_batch_encrypted_round_trip() {
+        let path = temp_wal_path("batch_encrypted");
+        let _ = fs::remove_file(&path);
+
+        let batch: Vec<WalEntry> = (0..8)
+            .map(|i| make_entry(200 + i, 0, format!("secret-{i}").as_bytes()))
+            .collect();
+        {
+            let mut wal =
+                Wal::open_with_cipher(&path, SyncMode::Always, Some(test_cipher(0x99))).unwrap();
+            wal.append_batch(&batch).unwrap();
+        }
+
+        // Ciphertext on disk: plaintext payloads must not be visible.
+        let raw = fs::read(&path).unwrap();
+        assert!(
+            !raw.windows(b"secret-0".len()).any(|w| w == b"secret-0"),
+            "payload leaked to disk in plaintext"
+        );
+
+        let wal = Wal::open_with_cipher(&path, SyncMode::Always, Some(test_cipher(0x99))).unwrap();
+        let out: Vec<WalEntry> = wal
+            .replay()
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(out, batch);
 
         fs::remove_file(&path).ok();
     }

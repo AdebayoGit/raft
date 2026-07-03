@@ -21,4 +21,4 @@ pub mod wal;
 pub use crypto::EncryptionKey;
 #[cfg(feature = "ffi")]
 pub use database::{Database, DatabaseError, DbTransaction};
-pub use engine::{StorageConfig, StorageEngine, StorageError};
+pub use engine::{BatchOp, StorageConfig, StorageEngine, StorageError};

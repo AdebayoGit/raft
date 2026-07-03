@@ -21,9 +21,10 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, TryLockError};
+use std::time::Duration;
 
-use crate::engine::{StorageConfig, StorageEngine, StorageError};
+use crate::engine::{BatchOp, StorageConfig, StorageEngine, StorageError};
 use crate::index::{BTreeIndex, DocId, HashIndex, Index};
 use crate::query::{
     Document, DocumentStore, IndexInfo, IndexKind, IndexSet, Query, QueryExecutor, QueryPlanner,
@@ -59,6 +60,13 @@ pub enum DatabaseError {
 
     #[error("invalid schema migration for collection `{collection}`: {reason}")]
     InvalidMigration { collection: String, reason: String },
+
+    /// A write staged into a group commit failed at the storage layer.
+    /// The message is the underlying [`StorageError`] rendered as text —
+    /// one storage failure fans out to every write in the batch, so the
+    /// error must be cloneable.
+    #[error("group commit failed: {0}")]
+    GroupCommit(String),
 }
 
 const DOC_PREFIX: &[u8] = b"__doc__/";
@@ -144,6 +152,36 @@ impl CollectionState {
     }
 }
 
+/// A validated, serialized write waiting in the group-commit queue.
+struct StagedPut {
+    ticket: u64,
+    collection: String,
+    doc: Document,
+    payload: Vec<u8>,
+}
+
+/// Staging area for group commit (S7f).
+///
+/// Concurrent [`Database::put`] callers stage their writes here; whichever
+/// caller wins the engine lock becomes the *leader* and commits every
+/// staged write with a single WAL write + fsync via
+/// [`StorageEngine::apply_batch`]. The rest (*followers*) wait on `done`
+/// for their ticket's result.
+#[derive(Default)]
+struct GroupCommit {
+    state: Mutex<GroupState>,
+    done: Condvar,
+}
+
+#[derive(Default)]
+struct GroupState {
+    next_ticket: u64,
+    staged: Vec<StagedPut>,
+    /// Per-ticket outcome: assigned version, or the storage error rendered
+    /// as text (a single I/O failure fans out to the whole batch).
+    results: HashMap<u64, Result<u64, String>>,
+}
+
 /// The shared inner state of a [`Database`].
 ///
 /// Wrapped in [`Arc`] inside `Database` so transactions and observers can
@@ -154,6 +192,7 @@ pub(crate) struct DatabaseInner {
     /// Registered schemas, keyed by collection name. Writes to a
     /// collection with a registered schema are validated against it.
     schemas: RwLock<HashMap<String, Schema>>,
+    group_commit: GroupCommit,
     #[cfg(feature = "async")]
     bus: EventBus,
 }
@@ -186,6 +225,104 @@ impl DatabaseInner {
     /// Write-lock the schema registry, recovering from poison.
     fn write_schemas(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, Schema>> {
         self.schemas.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Lock the group-commit staging area, recovering from poison.
+    fn lock_group_state(&self) -> MutexGuard<'_, GroupState> {
+        self.group_commit
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Leader path of group commit: drain every staged put and commit the
+    /// lot with one `apply_batch` (single WAL write + fsync), then apply
+    /// to memory, record per-ticket results, and wake all followers.
+    ///
+    /// Lock ordering: group state is never held while acquiring the engine
+    /// or collections locks (drain → release → commit), matching the
+    /// engine-then-collections order used by every other write path.
+    fn commit_staged_puts(&self, mut engine: MutexGuard<'_, StorageEngine>) {
+        let batch: Vec<StagedPut> = std::mem::take(&mut self.lock_group_state().staged);
+        if batch.is_empty() {
+            drop(engine);
+            self.group_commit.done.notify_all();
+            return;
+        }
+
+        let ops: Vec<BatchOp> = batch
+            .iter()
+            .map(|s| BatchOp::Put {
+                key: doc_key(&s.collection, s.doc.id),
+                value: s.payload.clone(),
+            })
+            .collect();
+        let io_result = engine.apply_batch(ops);
+
+        #[cfg(feature = "async")]
+        let mut events: Vec<MutationEvent> = Vec::new();
+
+        match io_result {
+            Err(e) => {
+                let msg = e.to_string();
+                let mut state = self.lock_group_state();
+                for staged in batch {
+                    state.results.insert(staged.ticket, Err(msg.clone()));
+                }
+            }
+            Ok(()) => {
+                // Durable — now visible: apply to memory under a brief
+                // write lock, exactly like the single-put path.
+                let mut collections = self.write_collections();
+                let mut versions: Vec<(u64, u64)> = Vec::with_capacity(batch.len());
+                for staged in batch {
+                    let coll_state = collections.entry(staged.collection.clone()).or_default();
+                    let id = staged.doc.id;
+                    let old = coll_state.docs.remove(&id);
+                    let was_present = old.is_some();
+                    if let Some(ref old_doc) = old {
+                        coll_state.unindex_doc(old_doc);
+                    }
+                    let version = coll_state.next_version;
+                    coll_state.next_version += 1;
+                    coll_state.next_doc_id = coll_state.next_doc_id.max(id.0 + 1);
+                    coll_state.index_doc(&staged.doc);
+                    coll_state.docs.insert(id, staged.doc);
+                    coll_state.versions.insert(id, version);
+                    versions.push((staged.ticket, version));
+
+                    #[cfg(feature = "async")]
+                    events.push(MutationEvent {
+                        collection: staged.collection,
+                        doc_id: id,
+                        mutation_type: if was_present {
+                            MutationType::Update
+                        } else {
+                            MutationType::Insert
+                        },
+                        origin: MutationOrigin::Local,
+                    });
+                    #[cfg(not(feature = "async"))]
+                    let _ = was_present;
+                }
+                drop(collections);
+
+                let mut state = self.lock_group_state();
+                for (ticket, version) in versions {
+                    state.results.insert(ticket, Ok(version));
+                }
+            }
+        }
+
+        drop(engine);
+        self.group_commit.done.notify_all();
+
+        // Events go out after every lock is released so a slow subscriber
+        // can never stall writers.
+        #[cfg(feature = "async")]
+        for event in events {
+            self.bus.publish(event);
+        }
     }
 
     /// Validate `doc` against the registered schema for `collection`, if
@@ -229,6 +366,7 @@ impl Database {
                 engine: Mutex::new(engine),
                 collections: RwLock::new(collections),
                 schemas: RwLock::new(schemas),
+                group_commit: GroupCommit::default(),
                 #[cfg(feature = "async")]
                 bus: EventBus::new(),
             }),
@@ -284,52 +422,65 @@ impl Database {
 
     /// Insert or update a document in `collection`. The doc's [`Document::id`]
     /// is honoured. Returns the new version number.
+    ///
+    /// Concurrent callers are group-committed (S7f): each caller stages
+    /// its validated write, and whichever caller wins the engine lock
+    /// becomes the leader and flushes *every* staged write with a single
+    /// WAL write + fsync. Under `SyncMode::Always` the write is durable
+    /// before it becomes visible, exactly as with a solo put — only the
+    /// fsync cost is amortised across the batch.
     pub fn put(&self, collection: &str, doc: Document) -> Result<u64, DatabaseError> {
         self.inner.validate_write(collection, &doc)?;
-        let id = doc.id;
-        let key = doc_key(collection, id);
         let payload = serialize_doc(&doc)?;
 
-        // The engine lock serialises writers; the collections lock is only
-        // taken *after* durable I/O completes, so readers are never blocked
-        // behind an fsync.
-        let mut engine = self.inner.lock_engine();
-        engine.put(key, payload)?;
-
-        let mut collections = self.inner.write_collections();
-        let state = collections.entry(collection.to_string()).or_default();
-        let old = state.docs.remove(&id);
-        let was_present = old.is_some();
-        if let Some(ref old_doc) = old {
-            state.unindex_doc(old_doc);
-        }
-        let version = state.next_version;
-        state.next_version += 1;
-        state.next_doc_id = state.next_doc_id.max(id.0 + 1);
-        state.index_doc(&doc);
-        state.docs.insert(id, doc);
-        state.versions.insert(id, version);
-        drop(collections);
-        drop(engine);
-
-        #[cfg(feature = "async")]
-        {
-            let mt = if was_present {
-                MutationType::Update
-            } else {
-                MutationType::Insert
-            };
-            self.inner.bus.publish(MutationEvent {
+        // Stage the write and take a ticket.
+        let ticket = {
+            let mut state = self.inner.lock_group_state();
+            let ticket = state.next_ticket;
+            state.next_ticket += 1;
+            state.staged.push(StagedPut {
+                ticket,
                 collection: collection.to_string(),
-                doc_id: id,
-                mutation_type: mt,
-                origin: MutationOrigin::Local,
+                doc,
+                payload,
             });
-        }
-        #[cfg(not(feature = "async"))]
-        let _ = was_present; // silence unused
+            ticket
+        };
 
-        Ok(version)
+        loop {
+            // A leader (possibly us, last iteration) may already have
+            // committed our ticket.
+            {
+                let mut state = self.inner.lock_group_state();
+                if let Some(result) = state.results.remove(&ticket) {
+                    return result.map_err(DatabaseError::GroupCommit);
+                }
+            }
+
+            // Try to become the leader; if another leader holds the
+            // engine, wait briefly for it to finish and re-check.
+            match self.inner.engine.try_lock() {
+                Ok(engine) => self.inner.commit_staged_puts(engine),
+                Err(TryLockError::Poisoned(e)) => self.inner.commit_staged_puts(e.into_inner()),
+                Err(TryLockError::WouldBlock) => {
+                    let state = self.inner.lock_group_state();
+                    if state.results.contains_key(&ticket) {
+                        continue;
+                    }
+                    // Timeout bounds the wait: the engine lock is also
+                    // taken by non-put paths (transactions, index builds)
+                    // which never signal `done`, so we must re-poll.
+                    let guard = self
+                        .inner
+                        .group_commit
+                        .done
+                        .wait_timeout(state, Duration::from_millis(1))
+                        .map(|(guard, _)| guard)
+                        .unwrap_or_else(|e| e.into_inner().0);
+                    drop(guard);
+                }
+            }
+        }
     }
 
     /// Allocate a fresh [`DocId`] for `collection` and insert `doc` under it.
@@ -871,14 +1022,23 @@ impl DbTransaction {
         }
 
         // Phase 2: durable I/O — collections lock NOT held, so readers
-        // are never blocked behind fsyncs.
-        for ((coll, id), _, payload) in &writes {
-            engine.put(doc_key(coll, *id), payload.clone())?;
-        }
+        // are never blocked behind fsyncs. The whole transaction goes to
+        // the engine as one batch: a single WAL write and a single fsync
+        // regardless of how many documents it touches (S7f).
         let deletes: Vec<(String, DocId)> = self.delete_set.drain().collect();
-        for (coll, id) in &deletes {
-            engine.delete(doc_key(coll, *id))?;
+        let mut ops: Vec<BatchOp> = Vec::with_capacity(writes.len() + deletes.len());
+        for ((coll, id), _, payload) in &writes {
+            ops.push(BatchOp::Put {
+                key: doc_key(coll, *id),
+                value: payload.clone(),
+            });
         }
+        for (coll, id) in &deletes {
+            ops.push(BatchOp::Delete {
+                key: doc_key(coll, *id),
+            });
+        }
+        engine.apply_batch(ops)?;
 
         // Phase 3: apply to memory under a brief write lock, collecting
         // events to emit after all locks are released.

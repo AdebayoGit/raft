@@ -117,6 +117,15 @@ fn encode_delete(key: &[u8]) -> Vec<u8> {
     buf
 }
 
+/// A single operation in a batched write, applied atomically with respect
+/// to durability: [`StorageEngine::apply_batch`] performs one WAL write and
+/// one fsync for the whole batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchOp {
+    Put { key: Vec<u8>, value: Vec<u8> },
+    Delete { key: Vec<u8> },
+}
+
 /// Decoded WAL operation for replay.
 enum WalOp {
     Put { key: Vec<u8>, value: Vec<u8> },
@@ -303,6 +312,47 @@ impl StorageEngine {
 
         self.memtable.insert(key, value);
         self.sequence += 1;
+
+        if self.memtable.should_flush() {
+            self.flush_memtable()?;
+        }
+
+        Ok(())
+    }
+
+    /// Apply a batch of operations with a single WAL write and a single
+    /// fsync (under `SyncMode::Always`).
+    ///
+    /// Each operation still gets its own WAL entry and HLC timestamp, so
+    /// the on-disk log is indistinguishable from individual `put`/`delete`
+    /// calls — replay and crash recovery are unaffected. A torn write in
+    /// the middle of the batch is truncated at recovery like any torn
+    /// tail, so a batch is durable as a prefix; callers that need
+    /// all-or-nothing semantics (transactions) get atomicity at the
+    /// visibility layer above, not here.
+    pub fn apply_batch(&mut self, ops: Vec<BatchOp>) -> Result<(), StorageError> {
+        if ops.is_empty() {
+            return Ok(());
+        }
+
+        let mut entries = Vec::with_capacity(ops.len());
+        for op in &ops {
+            let ts = self.advance_hlc();
+            let payload = match op {
+                BatchOp::Put { key, value } => encode_put(key, value),
+                BatchOp::Delete { key } => encode_delete(key),
+            };
+            entries.push(WalEntry::new(ts, self.config.device_id, payload));
+        }
+        self.wal.append_batch(&entries)?;
+
+        for op in ops {
+            match op {
+                BatchOp::Put { key, value } => self.memtable.insert(key, value),
+                BatchOp::Delete { key } => self.memtable.delete(key),
+            }
+            self.sequence += 1;
+        }
 
         if self.memtable.should_flush() {
             self.flush_memtable()?;
@@ -987,6 +1037,81 @@ mod tests {
 
         engine.delete(b"key".to_vec()).unwrap();
         assert_eq!(engine.get(b"key").unwrap(), None);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn apply_batch_round_trip_with_deletes() {
+        let dir = temp_dir("apply_batch");
+        let mut engine = StorageEngine::open(&dir, default_config()).unwrap();
+
+        engine.put(b"pre".to_vec(), b"existing".to_vec()).unwrap();
+
+        engine
+            .apply_batch(vec![
+                BatchOp::Put {
+                    key: b"a".to_vec(),
+                    value: b"1".to_vec(),
+                },
+                BatchOp::Put {
+                    key: b"b".to_vec(),
+                    value: b"2".to_vec(),
+                },
+                BatchOp::Delete {
+                    key: b"pre".to_vec(),
+                },
+                // Later op in the same batch wins over an earlier one.
+                BatchOp::Put {
+                    key: b"a".to_vec(),
+                    value: b"1-final".to_vec(),
+                },
+            ])
+            .unwrap();
+
+        assert_eq!(engine.get(b"a").unwrap(), Some(b"1-final".to_vec()));
+        assert_eq!(engine.get(b"b").unwrap(), Some(b"2".to_vec()));
+        assert_eq!(engine.get(b"pre").unwrap(), None);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn apply_batch_empty_is_noop() {
+        let dir = temp_dir("apply_batch_empty");
+        let mut engine = StorageEngine::open(&dir, default_config()).unwrap();
+        engine.apply_batch(Vec::new()).unwrap();
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn apply_batch_survives_reopen() {
+        let dir = temp_dir("apply_batch_reopen");
+        {
+            let mut engine = StorageEngine::open(&dir, default_config()).unwrap();
+            engine.put(b"victim".to_vec(), b"gone".to_vec()).unwrap();
+            engine
+                .apply_batch(vec![
+                    BatchOp::Put {
+                        key: b"k1".to_vec(),
+                        value: b"v1".to_vec(),
+                    },
+                    BatchOp::Delete {
+                        key: b"victim".to_vec(),
+                    },
+                    BatchOp::Put {
+                        key: b"k2".to_vec(),
+                        value: b"v2".to_vec(),
+                    },
+                ])
+                .unwrap();
+            // Dropped without flush — recovery must come from the WAL.
+        }
+
+        let engine = StorageEngine::open(&dir, default_config()).unwrap();
+        assert_eq!(engine.get(b"k1").unwrap(), Some(b"v1".to_vec()));
+        assert_eq!(engine.get(b"k2").unwrap(), Some(b"v2".to_vec()));
+        assert_eq!(engine.get(b"victim").unwrap(), None);
 
         fs::remove_dir_all(&dir).ok();
     }
