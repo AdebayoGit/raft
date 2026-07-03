@@ -1,3 +1,11 @@
 target/
 *.DS_Store
 .env
+
+# Gradle / Android build outputs
+.gradle/
+android/build/
+android/.cxx/
+
+# SwiftPM build outputs
+swift/.build/

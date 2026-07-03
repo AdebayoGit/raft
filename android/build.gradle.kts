@@ -7,6 +7,10 @@ android {
     namespace = "com.raftdb"
     compileSdk = 34
 
+    // Pin the NDK so local builds and CI resolve the same toolchain instead
+    // of AGP's default (which may not be installed).
+    ndkVersion = "26.3.11579264"
+
     defaultConfig {
         minSdk = 21
 

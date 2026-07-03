@@ -1,0 +1,207 @@
+# Raft CI — core gates + four-binding build matrix (F6b, X4).
+#
+# Every job must be green to merge; enable branch protection on `main`
+# with all jobs listed as required status checks.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------- core
+  core:
+    name: core (fmt, clippy, tests, audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      - name: cargo fmt
+        working-directory: core
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        working-directory: core
+        run: cargo clippy --features ffi --tests -- -D warnings
+
+      # Includes the crash-recovery harness (tests/crash_recovery.rs) and
+      # CRDT/HLC property tests alongside the unit suite.
+      - name: cargo test
+        working-directory: core
+        run: cargo test --features ffi
+
+      - name: install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        working-directory: core
+        run: cargo audit
+
+  # ---------------------------------------------------------- fuzz smoke
+  fuzz-smoke:
+    name: fuzz smoke (15s per target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core/fuzz
+
+      - name: install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: run fuzz targets
+        working-directory: core
+        run: |
+          for target in wal_entry_decode manifest_record_decode sstable_reader_open ffi_json_envelopes; do
+            cargo +nightly fuzz run "$target" -- -max_total_time=15
+          done
+
+  # -------------------------------------------------------------- flutter
+  flutter:
+    name: binding / flutter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: pub get
+        working-directory: flutter
+        run: flutter pub get
+
+      - name: dart format
+        working-directory: flutter
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: dart analyze
+        working-directory: flutter
+        run: dart analyze --fatal-infos
+
+      - name: flutter test
+        working-directory: flutter
+        run: flutter test
+
+  # ---------------------------------------------------------- kotlin/jni
+  android:
+    name: binding / kotlin-jni
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      - name: install cargo-ndk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      # Rebuild libraftdb.so from the current core so the AAR links
+      # against the code under test, not the committed prebuilt.
+      - name: build core for android ABIs
+        working-directory: core
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
+            -o ../android/src/main/jniLibs \
+            build --release --features ffi
+
+      - name: gradle build + unit tests
+        run: gradle -p android assembleDebug testDebugUnitTest
+
+  # ---------------------------------------------------------------- swift
+  swift:
+    name: binding / swift
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      # The committed xcframework only carries iOS slices. Build the core
+      # for the macOS host and repackage so `swift test` can link and run.
+      - name: build core for macOS host
+        working-directory: core
+        run: cargo build --release --features ffi
+
+      - name: repackage xcframework with macOS slice
+        run: |
+          rm -rf swift/RaftDB.xcframework
+          xcodebuild -create-xcframework \
+            -library core/target/release/libraftdb.a \
+            -output swift/RaftDB.xcframework
+
+      - name: swift build
+        working-directory: swift
+        run: swift build
+
+      - name: swift test
+        working-directory: swift
+        run: swift test
+
+  # ------------------------------------------------------------- rn nitro
+  rn:
+    name: binding / rn-nitro
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: bun install
+        working-directory: rn
+        run: bun install --frozen-lockfile
+
+      - name: typecheck
+        working-directory: rn
+        run: bun run typecheck
+
+      - name: jest
+        working-directory: rn
+        run: bun run test

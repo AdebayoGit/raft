@@ -1,3 +1,0 @@
-module RaftDB {
-    header "/Users/Ekundayo/Projects/raft/swift/.build/x86_64-apple-macosx/debug/RaftDB.build/include/RaftDB-Swift.h"
-}
