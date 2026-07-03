@@ -15,6 +15,26 @@
 #define RAFT_DB_FFI
 
 
+#if defined(RAFT_DB_FFI)
+/**
+ * Maximum accepted size, in bytes, of a document JSON envelope
+ * (`rft_collection_put`, `rft_collection_put_auto`,
+ * `rft_transaction_put`). Larger payloads are rejected with
+ * [`RftError::PayloadTooLarge`].
+ */
+#define RFT_MAX_DOC_JSON_LEN ((16 * 1024) * 1024)
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Maximum accepted size, in bytes, of a query-spec JSON envelope
+ * (`rft_query_execute`, `rft_observe_query`,
+ * `rft_observe_query_dart_port`). Larger payloads are rejected with
+ * [`RftError::PayloadTooLarge`].
+ */
+#define RFT_MAX_QUERY_JSON_LEN (64 * 1024)
+#endif
+
 /**
  * Maximum accepted record payload length when decoding (16 MiB).
  * Guards against corrupt/malicious length prefixes forcing huge allocations.
@@ -138,6 +158,22 @@ enum RftError
      * `Dart_PostCObject_DL` function.
      */
     RFT_ERROR_DART_API_NOT_INITIALIZED = 12,
+#endif
+#if defined(RAFT_DB_FFI)
+    /**
+     * A JSON envelope exceeds its size cap
+     * ([`RFT_MAX_DOC_JSON_LEN`](super::RFT_MAX_DOC_JSON_LEN) for
+     * documents, [`RFT_MAX_QUERY_JSON_LEN`](super::RFT_MAX_QUERY_JSON_LEN)
+     * for query specs).
+     */
+    RFT_ERROR_PAYLOAD_TOO_LARGE = 13,
+#endif
+#if defined(RAFT_DB_FFI)
+    /**
+     * A JSON envelope declared a `"v"` schema version this build does
+     * not support.
+     */
+    RFT_ERROR_UNSUPPORTED_VERSION = 14,
 #endif
 };
 #ifndef __cplusplus

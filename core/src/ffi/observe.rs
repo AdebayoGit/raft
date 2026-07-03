@@ -220,7 +220,7 @@ pub unsafe extern "C" fn rft_observe_query(
         let json = unsafe { slice::from_raw_parts(query_json, query_json_len) };
         let query: Query = match query_from_json(json) {
             Ok(q) => q,
-            Err(_) => return RftError::InvalidJson,
+            Err(e) => return e,
         };
 
         // Atomically (subscribe → snapshot) so we don't drop any mutations

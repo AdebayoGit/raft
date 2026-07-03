@@ -35,10 +35,20 @@ pub struct RaftQueryResult {
     docs: Vec<Document>,
 }
 
+/// Envelope schema versions this build understands.
+const SUPPORTED_ENVELOPE_VERSION: u32 = 1;
+
 /// JSON wire format for a query. Mirrors [`crate::query::Query`] but
 /// without the private fields, so we can deserialize it directly.
+///
+/// The envelope is strict (unknown keys are rejected) and versioned: an
+/// optional `"v"` field declares the schema version, defaulting to 1.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct QuerySpec {
+    /// Envelope schema version. Absent means version 1.
+    #[serde(default)]
+    v: Option<u32>,
     collection: String,
     #[serde(default)]
     filter: Option<Filter>,
@@ -69,12 +79,20 @@ impl From<QuerySpec> for Query {
     }
 }
 
-/// Parse a query JSON byte buffer into a [`Query`]. Used by both
-/// [`rft_query_execute`] and [`super::observe::rft_observe_query`].
-pub(super) fn query_from_json(bytes: &[u8]) -> Result<Query, ()> {
-    serde_json::from_slice::<QuerySpec>(bytes)
-        .map(Query::from)
-        .map_err(|_| ())
+/// Parse a query JSON byte buffer into a [`Query`], enforcing the size
+/// cap, strict (unknown-key-rejecting) parsing, and the envelope
+/// version. Used by [`rft_query_execute`],
+/// [`super::observe::rft_observe_query`], and
+/// [`super::dart_port::rft_observe_query_dart_port`].
+pub(super) fn query_from_json(bytes: &[u8]) -> Result<Query, RftError> {
+    if bytes.len() > super::RFT_MAX_QUERY_JSON_LEN {
+        return Err(RftError::PayloadTooLarge);
+    }
+    let spec: QuerySpec = serde_json::from_slice(bytes).map_err(|_| RftError::InvalidJson)?;
+    if spec.v.unwrap_or(SUPPORTED_ENVELOPE_VERSION) != SUPPORTED_ENVELOPE_VERSION {
+        return Err(RftError::UnsupportedVersion);
+    }
+    Ok(Query::from(spec))
 }
 
 /// Execute a query and return an opaque result handle. Caller must free
@@ -102,12 +120,10 @@ pub unsafe extern "C" fn rft_query_execute(
         }
 
         let json = unsafe { slice::from_raw_parts(query_json, query_json_len) };
-        let spec: QuerySpec = match serde_json::from_slice(json) {
-            Ok(s) => s,
-            Err(_) => return RftError::InvalidJson,
+        let query = match query_from_json(json) {
+            Ok(q) => q,
+            Err(e) => return e,
         };
-
-        let query: Query = spec.into();
         let docs = handle.database().query(&query);
 
         let raw = Box::into_raw(Box::new(RaftQueryResult { docs }));
@@ -203,6 +219,54 @@ mod tests {
         let q: Query = spec.into();
         assert_eq!(q.collection_name(), "users");
         assert!(q.get_filter().is_none());
+    }
+
+    #[test]
+    fn parse_rejects_unknown_envelope_keys() {
+        let json = br#"{"collection":"users","evil":true}"#;
+        assert!(matches!(query_from_json(json), Err(RftError::InvalidJson)));
+    }
+
+    #[test]
+    fn parse_accepts_current_envelope_version() {
+        let json = br#"{"v":1,"collection":"users"}"#;
+        let q = query_from_json(json).unwrap();
+        assert_eq!(q.collection_name(), "users");
+    }
+
+    #[test]
+    fn parse_rejects_future_envelope_version() {
+        let json = br#"{"v":2,"collection":"users"}"#;
+        assert!(matches!(
+            query_from_json(json),
+            Err(RftError::UnsupportedVersion)
+        ));
+    }
+
+    #[test]
+    fn parse_rejects_oversized_query_envelope() {
+        let mut json = br#"{"collection":""#.to_vec();
+        json.extend(std::iter::repeat_n(
+            b'a',
+            super::super::RFT_MAX_QUERY_JSON_LEN,
+        ));
+        json.extend_from_slice(br#""}"#);
+        assert!(matches!(
+            query_from_json(&json),
+            Err(RftError::PayloadTooLarge)
+        ));
+    }
+
+    #[test]
+    fn document_envelope_enforces_size_cap() {
+        let mut json = br#"{"id":1,"fields":{"blob":{"String":""#.to_vec();
+        // Stay structurally valid but exceed the cap.
+        json.resize(super::super::RFT_MAX_DOC_JSON_LEN + 16, b'a');
+        json.extend_from_slice(br#""}}}"#);
+        assert!(matches!(
+            super::super::document_from_json(&json),
+            Err(RftError::PayloadTooLarge)
+        ));
     }
 
     #[test]

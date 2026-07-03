@@ -43,4 +43,12 @@ pub enum RftError {
     /// [`rft_dart_init`](super::rft_dart_init) registered the Dart VM's
     /// `Dart_PostCObject_DL` function.
     DartApiNotInitialized = 12,
+    /// A JSON envelope exceeds its size cap
+    /// ([`RFT_MAX_DOC_JSON_LEN`](super::RFT_MAX_DOC_JSON_LEN) for
+    /// documents, [`RFT_MAX_QUERY_JSON_LEN`](super::RFT_MAX_QUERY_JSON_LEN)
+    /// for query specs).
+    PayloadTooLarge = 13,
+    /// A JSON envelope declared a `"v"` schema version this build does
+    /// not support.
+    UnsupportedVersion = 14,
 }

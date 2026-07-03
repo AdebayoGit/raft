@@ -232,7 +232,7 @@ pub unsafe extern "C" fn rft_observe_query_dart_port(
         let json = unsafe { slice::from_raw_parts(query_json, query_json_len) };
         let query: Query = match query_from_json(json) {
             Ok(q) => q,
-            Err(_) => return RftError::InvalidJson,
+            Err(e) => return e,
         };
 
         // Atomically (subscribe → snapshot) so no mutation is dropped

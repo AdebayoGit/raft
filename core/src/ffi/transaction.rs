@@ -139,9 +139,9 @@ pub unsafe extern "C" fn rft_transaction_put(
             Err(_) => return RftError::InvalidUtf8,
         };
         let json = unsafe { slice::from_raw_parts(doc_json, doc_json_len) };
-        let doc: Document = match serde_json::from_slice(json) {
+        let doc: Document = match super::document_from_json(json) {
             Ok(d) => d,
-            Err(_) => return RftError::InvalidJson,
+            Err(e) => return e,
         };
 
         match t.put(coll, doc) {

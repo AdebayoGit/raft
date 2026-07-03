@@ -1105,7 +1105,17 @@ enum RftError {
   /// A `rft_observe_*_dart_port` function was called before
   /// [`rft_dart_init`](super::rft_dart_init) registered the Dart VM's
   /// `Dart_PostCObject_DL` function.
-  RFT_ERROR_DART_API_NOT_INITIALIZED(12);
+  RFT_ERROR_DART_API_NOT_INITIALIZED(12),
+
+  /// A JSON envelope exceeds its size cap
+  /// ([`RFT_MAX_DOC_JSON_LEN`](super::RFT_MAX_DOC_JSON_LEN) for
+  /// documents, [`RFT_MAX_QUERY_JSON_LEN`](super::RFT_MAX_QUERY_JSON_LEN)
+  /// for query specs).
+  RFT_ERROR_PAYLOAD_TOO_LARGE(13),
+
+  /// A JSON envelope declared a `"v"` schema version this build does
+  /// not support.
+  RFT_ERROR_UNSUPPORTED_VERSION(14);
 
   final int value;
   const RftError(this.value);
@@ -1124,6 +1134,8 @@ enum RftError {
     10 => RFT_ERROR_INTERNAL_PANIC,
     11 => RFT_ERROR_INVALID_PATH,
     12 => RFT_ERROR_DART_API_NOT_INITIALIZED,
+    13 => RFT_ERROR_PAYLOAD_TOO_LARGE,
+    14 => RFT_ERROR_UNSUPPORTED_VERSION,
     _ => throw ArgumentError("Unknown value for RftError: $value"),
   };
 }
@@ -2704,6 +2716,10 @@ const int EXIT_SUCCESS = 0;
 const int RAND_MAX = 2147483647;
 
 const int _MALLOC_TYPE_MALLOC_BACKDEPLOY_PUBLIC = 1;
+
+const int RFT_MAX_DOC_JSON_LEN = 16777216;
+
+const int RFT_MAX_QUERY_JSON_LEN = 65536;
 
 const int MAX_RECORD_LEN = 16777216;
 

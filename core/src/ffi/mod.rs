@@ -74,6 +74,27 @@ use std::slice;
 
 use crate::database::Database;
 
+/// Maximum accepted size, in bytes, of a document JSON envelope
+/// (`rft_collection_put`, `rft_collection_put_auto`,
+/// `rft_transaction_put`). Larger payloads are rejected with
+/// [`RftError::PayloadTooLarge`].
+pub const RFT_MAX_DOC_JSON_LEN: usize = 16 * 1024 * 1024;
+
+/// Maximum accepted size, in bytes, of a query-spec JSON envelope
+/// (`rft_query_execute`, `rft_observe_query`,
+/// `rft_observe_query_dart_port`). Larger payloads are rejected with
+/// [`RftError::PayloadTooLarge`].
+pub const RFT_MAX_QUERY_JSON_LEN: usize = 64 * 1024;
+
+/// Parse a document JSON envelope, enforcing the size cap. Shared by
+/// the collection and transaction put paths.
+fn document_from_json(bytes: &[u8]) -> Result<crate::query::Document, RftError> {
+    if bytes.len() > RFT_MAX_DOC_JSON_LEN {
+        return Err(RftError::PayloadTooLarge);
+    }
+    serde_json::from_slice(bytes).map_err(|_| RftError::InvalidJson)
+}
+
 /// Reject database paths that are empty or contain `..` components —
 /// the traversal vector for attacker-influenced paths (deep links etc.).
 fn validate_open_path(raw: &str) -> Result<(), RftError> {
