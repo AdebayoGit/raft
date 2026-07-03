@@ -507,20 +507,18 @@ mod tests {
         let bus = Arc::new(EventBus::new());
         let runner = Arc::new(MockRunner::new(vec![user(1, "Alice", true)]));
         let query = Query::collection("users");
-        let mut lq = LiveQuery::new(query, runner.clone(), &bus);
+        // Deterministic setup: subscribe and snapshot eagerly via
+        // `from_receiver`, then publish both events synchronously — the
+        // broadcast channel buffers them, so there is no spawn/yield race.
+        let receiver = bus.subscribe();
+        let initial = runner.execute(&query);
+        let mut lq = LiveQuery::from_receiver(query, runner.clone(), receiver, initial);
 
-        let bus2 = bus.clone();
-        let runner2 = runner.clone();
-        tokio::spawn(async move {
-            tokio::task::yield_now().await;
-            // Mutation that doesn't change results.
-            bus2.publish(MutationEvent::update("users", DocId(1)));
-            // Small yield to let the live query process the first event.
-            tokio::task::yield_now().await;
-            // Mutation that does change results.
-            runner2.set_docs(vec![user(1, "Alice", true), user(2, "Bob", true)]);
-            bus2.publish(MutationEvent::insert("users", DocId(2)));
-        });
+        // Mutation that doesn't change results.
+        bus.publish(MutationEvent::update("users", DocId(1)));
+        // Mutation that does change results.
+        runner.set_docs(vec![user(1, "Alice", true), user(2, "Bob", true)]);
+        bus.publish(MutationEvent::insert("users", DocId(2)));
 
         let diff = lq.next_diff().await.unwrap();
         // Should have skipped the no-op diff.
