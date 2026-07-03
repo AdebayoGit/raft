@@ -37,6 +37,9 @@ pub enum StorageError {
 
     #[error("encryption key error: {0}")]
     Encryption(String),
+
+    #[error("backup error: {0}")]
+    Backup(#[from] crate::backup::BackupError),
 }
 
 /// Configuration for the storage engine.
@@ -516,6 +519,73 @@ impl StorageEngine {
             self.flush_memtable()?;
         }
         Ok(())
+    }
+
+    // ── Backup / restore (X7) ───────────────────────────────────────────
+
+    /// Export a consistent logical snapshot of every live key-value pair
+    /// to `path`.
+    ///
+    /// Takes `&self`: the caller is responsible for excluding concurrent
+    /// writers (the high-level [`Database`](crate::database) API holds
+    /// its engine mutex for the duration, making the snapshot a
+    /// point-in-time view).
+    ///
+    /// The snapshot is written to a temp file and atomically renamed into
+    /// place, so an existing backup at `path` is never replaced with a
+    /// partial one. Values are exported in plaintext even when the engine
+    /// is encrypted — see [`crate::backup`].
+    pub fn export_backup(&self, path: &Path) -> Result<(), StorageError> {
+        let entries = self.scan_prefix(&[])?;
+
+        let tmp = path.with_extension("tmp");
+        let mut file = std::io::BufWriter::new(fs::File::create(&tmp)?);
+        crate::backup::write_snapshot(&mut file, &entries)?;
+        let file = file.into_inner().map_err(|e| e.into_error())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    /// Restore a snapshot produced by [`export_backup`](Self::export_backup)
+    /// into a *fresh* engine at `db_dir`.
+    ///
+    /// Fails if `db_dir` already exists and is non-empty — restoring must
+    /// never silently merge into (or clobber) live data.
+    pub fn import_backup(
+        backup_path: &Path,
+        db_dir: impl AsRef<Path>,
+        config: StorageConfig,
+    ) -> Result<Self, StorageError> {
+        let db_dir = db_dir.as_ref();
+        if db_dir.exists() && fs::read_dir(db_dir)?.next().is_some() {
+            return Err(StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "restore target `{}` is not empty — refusing to merge into existing data",
+                    db_dir.display()
+                ),
+            )));
+        }
+
+        let mut reader = std::io::BufReader::new(fs::File::open(backup_path)?);
+        let entries = crate::backup::read_snapshot(&mut reader)?;
+
+        let mut engine = Self::open(db_dir, config)?;
+        // Chunked so one restore never turns into a single giant WAL write.
+        const CHUNK: usize = 1024;
+        let mut entries = entries.into_iter().peekable();
+        while entries.peek().is_some() {
+            let ops: Vec<BatchOp> = entries
+                .by_ref()
+                .take(CHUNK)
+                .map(|(key, value)| BatchOp::Put { key, value })
+                .collect();
+            engine.apply_batch(ops)?;
+        }
+        engine.flush()?;
+        Ok(engine)
     }
 
     /// Run one compaction pass. Merges all SSTables at the first level

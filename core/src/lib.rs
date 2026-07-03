@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod compaction;
 pub mod crdt;
 pub mod crypto;

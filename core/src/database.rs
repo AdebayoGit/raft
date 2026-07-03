@@ -562,6 +562,46 @@ impl Database {
             .unwrap_or(0)
     }
 
+    // ── Backup / restore (X7) ───────────────────────────────────────────
+
+    /// Export a consistent point-in-time snapshot of the whole database
+    /// to `path`.
+    ///
+    /// The engine lock is held for the duration, so writes issued while
+    /// the backup runs simply wait and land after the snapshot — they are
+    /// never half-included. The snapshot file is written in plaintext,
+    /// even for encrypted databases.
+    pub fn export_backup(&self, path: impl AsRef<Path>) -> Result<(), DatabaseError> {
+        let engine = self.inner.lock_engine();
+        engine.export_backup(path.as_ref())?;
+        Ok(())
+    }
+
+    /// Restore a snapshot produced by [`export_backup`](Self::export_backup)
+    /// into a fresh database directory. Fails if `db_dir` is non-empty.
+    pub fn restore_backup(
+        backup_path: impl AsRef<Path>,
+        db_dir: impl AsRef<Path>,
+    ) -> Result<Self, DatabaseError> {
+        Self::restore_backup_with_config(backup_path, db_dir, StorageConfig::default())
+    }
+
+    /// [`restore_backup`](Self::restore_backup) with a custom
+    /// [`StorageConfig`] — e.g. to restore a plaintext snapshot into an
+    /// encrypted database.
+    pub fn restore_backup_with_config(
+        backup_path: impl AsRef<Path>,
+        db_dir: impl AsRef<Path>,
+        config: StorageConfig,
+    ) -> Result<Self, DatabaseError> {
+        let engine =
+            StorageEngine::import_backup(backup_path.as_ref(), db_dir.as_ref(), config.clone())?;
+        // Close the import engine so `open_with_config` can take the
+        // single-process lock and rehydrate collections/schemas/indexes.
+        drop(engine);
+        Self::open_with_config(db_dir, config)
+    }
+
     // ── Indexes ─────────────────────────────────────────────────────────
 
     /// Create a secondary index on `field` in `collection`.
