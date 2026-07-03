@@ -15,6 +15,11 @@ name = "raftdb"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
+# AES-256-GCM for encryption at rest (F4). RustCrypto's audited AEAD — we
+# never roll our own crypto. no-default-features keeps the dependency
+# surface minimal (no rand_core/getrandom pull-in; nonces come from our
+# existing getrandom dependency).
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 bytes = "1"
 crc32fast = "1"
 getrandom = "0.4.3"

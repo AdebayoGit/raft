@@ -1,5 +1,6 @@
 pub mod compaction;
 pub mod crdt;
+pub mod crypto;
 #[cfg(feature = "ffi")]
 pub mod database;
 mod engine;
@@ -17,6 +18,7 @@ pub mod sync;
 pub mod transaction;
 pub mod wal;
 
+pub use crypto::EncryptionKey;
 #[cfg(feature = "ffi")]
 pub use database::{Database, DatabaseError, DbTransaction};
 pub use engine::{StorageConfig, StorageEngine, StorageError};

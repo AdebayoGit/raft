@@ -6,6 +6,7 @@ use super::bloom::BloomFilter;
 use super::cache::BlockCache;
 use super::error::SSTableError;
 use super::SSTABLE_MAGIC;
+use crate::crypto::Cipher;
 
 /// A key-value pair where `None` value represents a tombstone.
 type KvPair = (Vec<u8>, Option<Vec<u8>>);
@@ -32,6 +33,10 @@ pub struct SSTableReader {
     /// `None` means every block read hits the file (used by compaction so
     /// one-shot merges don't pollute the cache).
     cache: Option<(Arc<BlockCache>, u64)>,
+    /// When set (F4 encryption at rest), every region except the footer is
+    /// sealed on disk; blocks are opened after reading and the block cache
+    /// stores decrypted plaintext.
+    cipher: Option<Arc<Cipher>>,
 }
 
 /// Decoded index entry: first key of a data block and where to find it.
@@ -46,7 +51,15 @@ impl SSTableReader {
     /// Open an SSTable file without a block cache. Every data-block read
     /// goes to the file.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SSTableError> {
-        Self::open_inner(path.as_ref(), None)
+        Self::open_inner(path.as_ref(), None, None)
+    }
+
+    /// Open an encrypted SSTable file without a block cache.
+    pub fn open_with_cipher(
+        path: impl AsRef<Path>,
+        cipher: Option<Arc<Cipher>>,
+    ) -> Result<Self, SSTableError> {
+        Self::open_inner(path.as_ref(), None, cipher)
     }
 
     /// Open an SSTable file whose data-block reads go through `cache`,
@@ -56,12 +69,24 @@ impl SSTableReader {
         cache: Arc<BlockCache>,
         table_id: u64,
     ) -> Result<Self, SSTableError> {
-        Self::open_inner(path.as_ref(), Some((cache, table_id)))
+        Self::open_inner(path.as_ref(), Some((cache, table_id)), None)
+    }
+
+    /// Open an encrypted SSTable file whose (decrypted) data blocks go
+    /// through `cache`, keyed by `table_id`.
+    pub fn open_with_cache_and_cipher(
+        path: impl AsRef<Path>,
+        cache: Arc<BlockCache>,
+        table_id: u64,
+        cipher: Option<Arc<Cipher>>,
+    ) -> Result<Self, SSTableError> {
+        Self::open_inner(path.as_ref(), Some((cache, table_id)), cipher)
     }
 
     fn open_inner(
         path: &Path,
         cache: Option<(Arc<BlockCache>, u64)>,
+        cipher: Option<Arc<Cipher>>,
     ) -> Result<Self, SSTableError> {
         let path = path.to_path_buf();
         let file = fs::File::open(&path)?;
@@ -97,10 +122,12 @@ impl SSTableReader {
         read_exact_at(&file, &mut meta, bloom_offset)?;
 
         let bloom_len = (index_offset - bloom_offset) as usize;
-        let bloom = BloomFilter::decode(&meta[..bloom_len]).ok_or_else(|| {
+        let bloom_bytes = maybe_open(cipher.as_deref(), &meta[..bloom_len], bloom_offset)?;
+        let bloom = BloomFilter::decode(&bloom_bytes).ok_or_else(|| {
             SSTableError::CorruptIndex("failed to decode bloom filter".to_string())
         })?;
-        let index = Self::decode_index(&meta[bloom_len..])?;
+        let index_bytes = maybe_open(cipher.as_deref(), &meta[bloom_len..], index_offset)?;
+        let index = Self::decode_index(&index_bytes)?;
 
         Ok(Self {
             path,
@@ -110,6 +137,7 @@ impl SSTableReader {
             index,
             entry_count,
             cache,
+            cipher,
         })
     }
 
@@ -233,7 +261,12 @@ impl SSTableReader {
 
         let mut buf = vec![0u8; ie.length as usize];
         read_exact_at(&self.file, &mut buf, ie.offset)?;
-        let block = Arc::new(buf);
+        // Decrypt before caching — the cache always holds plaintext blocks.
+        let plaintext = match maybe_open(self.cipher.as_deref(), &buf, ie.offset)? {
+            std::borrow::Cow::Borrowed(_) => buf,
+            std::borrow::Cow::Owned(v) => v,
+        };
+        let block = Arc::new(plaintext);
 
         if let Some((cache, table_id)) = &self.cache {
             cache.insert(*table_id, ie.offset, Arc::clone(&block));
@@ -515,6 +548,24 @@ impl Iterator for SSTableIter<'_> {
                 }
             }
         }
+    }
+}
+
+/// Decrypt `data` when a cipher is configured, otherwise borrow it as-is.
+///
+/// Authentication failures map to [`SSTableError::BadCiphertext`] carrying
+/// the file offset of the sealed region.
+fn maybe_open<'a>(
+    cipher: Option<&Cipher>,
+    data: &'a [u8],
+    offset: u64,
+) -> Result<std::borrow::Cow<'a, [u8]>, SSTableError> {
+    match cipher {
+        Some(cipher) => cipher
+            .open(data)
+            .map(std::borrow::Cow::Owned)
+            .map_err(|_| SSTableError::BadCiphertext { offset }),
+        None => Ok(std::borrow::Cow::Borrowed(data)),
     }
 }
 
@@ -947,5 +998,127 @@ mod tests {
         for (_, _, path) in &readers {
             fs::remove_file(path).ok();
         }
+    }
+
+    // ── Encryption at rest (F4) ──
+
+    fn test_cipher(byte: u8) -> Arc<Cipher> {
+        Arc::new(Cipher::new(&crate::crypto::EncryptionKey::from_bytes(
+            [byte; crate::crypto::KEY_LEN],
+        )))
+    }
+
+    #[test]
+    fn encrypted_write_read_round_trip() {
+        let path = temp_path("encrypted_round_trip");
+        let _ = fs::remove_file(&path);
+        let cipher = test_cipher(0x42);
+        let entries = sample_entries(100);
+
+        let w = SSTableWriter::new(&path)
+            .with_block_size(128)
+            .with_cipher(Some(Arc::clone(&cipher)));
+        w.write(entries.iter().cloned()).unwrap();
+
+        let reader = SSTableReader::open_with_cipher(&path, Some(Arc::clone(&cipher))).unwrap();
+        for (k, v) in &entries {
+            assert_eq!(reader.get(k).unwrap(), Some(v.clone()));
+        }
+        assert_eq!(reader.scan_all().unwrap(), entries);
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn encrypted_file_contains_no_plaintext() {
+        let path = temp_path("encrypted_no_plaintext");
+        let _ = fs::remove_file(&path);
+        let entries = sample_entries(50);
+
+        let w = SSTableWriter::new(&path)
+            .with_block_size(128)
+            .with_cipher(Some(test_cipher(0x42)));
+        w.write(entries.iter().cloned()).unwrap();
+
+        let raw = fs::read(&path).unwrap();
+        for needle in [b"key-00000".as_slice(), b"val-00000".as_slice()] {
+            assert!(
+                !raw.windows(needle.len()).any(|w| w == needle),
+                "plaintext leaked into encrypted SSTable"
+            );
+        }
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn encrypted_table_unreadable_with_wrong_key() {
+        let path = temp_path("encrypted_wrong_key");
+        let _ = fs::remove_file(&path);
+
+        let w = SSTableWriter::new(&path)
+            .with_block_size(128)
+            .with_cipher(Some(test_cipher(0x01)));
+        w.write(sample_entries(50).iter().cloned()).unwrap();
+
+        // Wrong key: bloom region fails authentication at open.
+        let result = SSTableReader::open_with_cipher(&path, Some(test_cipher(0x02)));
+        assert!(matches!(result, Err(SSTableError::BadCiphertext { .. })));
+
+        // No key at all: sealed regions cannot be parsed as plaintext.
+        assert!(SSTableReader::open(&path).is_err());
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn corrupt_ciphertext_returns_integrity_error() {
+        let path = temp_path("encrypted_corrupt_block");
+        let _ = fs::remove_file(&path);
+        let cipher = test_cipher(0x42);
+        let entries = sample_entries(100);
+
+        let w = SSTableWriter::new(&path)
+            .with_block_size(128)
+            .with_cipher(Some(Arc::clone(&cipher)));
+        w.write(entries.iter().cloned()).unwrap();
+
+        // Flip one byte inside the first data block (offset 0 region).
+        let mut raw = fs::read(&path).unwrap();
+        raw[10] ^= 0xFF;
+        fs::write(&path, &raw).unwrap();
+
+        let reader = SSTableReader::open_with_cipher(&path, Some(cipher)).unwrap();
+        let result = reader.get(&entries[0].0);
+        assert!(matches!(result, Err(SSTableError::BadCiphertext { .. })));
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn encrypted_reads_through_block_cache() {
+        let path = temp_path("encrypted_cached");
+        let _ = fs::remove_file(&path);
+        let cipher = test_cipher(0x42);
+        let entries = sample_entries(100);
+
+        let w = SSTableWriter::new(&path)
+            .with_block_size(128)
+            .with_cipher(Some(Arc::clone(&cipher)));
+        w.write(entries.iter().cloned()).unwrap();
+
+        let cache = Arc::new(BlockCache::new(64 * 1024));
+        let reader =
+            SSTableReader::open_with_cache_and_cipher(&path, Arc::clone(&cache), 7, Some(cipher))
+                .unwrap();
+        // Two passes: second pass is served from the (plaintext) cache.
+        for _ in 0..2 {
+            for (k, v) in &entries {
+                assert_eq!(reader.get(k).unwrap(), Some(v.clone()));
+            }
+        }
+        assert!(cache.current_bytes() > 0);
+
+        fs::remove_file(&path).ok();
     }
 }

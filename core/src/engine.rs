@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::compaction::{CompactionConfig, DeviceState};
+use crate::crypto::{Cipher, EncryptionKey};
 use crate::manifest::{Manifest, SSTableMeta, TableId};
 use crate::memtable::MemTable;
 use crate::sstable::{BlockCache, SSTableError, SSTableIter, SSTableReader, SSTableWriter};
@@ -33,6 +34,9 @@ pub enum StorageError {
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("encryption key error: {0}")]
+    Encryption(String),
 }
 
 /// Configuration for the storage engine.
@@ -63,6 +67,14 @@ pub struct StorageConfig {
     /// block bytes stay under this limit regardless of how many tables
     /// are live. Default: 8 MiB.
     pub block_cache_bytes: usize,
+    /// Encryption-at-rest key (F4). When set, every WAL entry, SSTable
+    /// region, and manifest record is sealed with AES-256-GCM. Key custody
+    /// (Keychain, Android Keystore, …) belongs to the platform bindings.
+    /// Default: `None` — files are written in plaintext.
+    ///
+    /// A database must always be reopened with the same key it was created
+    /// with; mixing keys (or omitting one) fails with an integrity error.
+    pub encryption_key: Option<EncryptionKey>,
 }
 
 impl Default for StorageConfig {
@@ -75,6 +87,7 @@ impl Default for StorageConfig {
             wal_sync: SyncMode::Always,
             wal_preallocate: 1024 * 1024,
             block_cache_bytes: 8 * 1024 * 1024,
+            encryption_key: None,
         }
     }
 }
@@ -183,6 +196,8 @@ pub struct StorageEngine {
     block_cache: Arc<BlockCache>,
     /// Last platform-reported device state; gates `maybe_compact`.
     device_state: DeviceState,
+    /// Shared AEAD cipher when encryption at rest is enabled (F4).
+    cipher: Option<Arc<Cipher>>,
 }
 
 impl StorageEngine {
@@ -207,9 +222,21 @@ impl StorageEngine {
             fs::create_dir_all(sstables_dir.join(format!("L{l}")))?;
         }
 
+        // Build the shared AEAD cipher once when a key is configured.
+        let cipher = config
+            .encryption_key
+            .as_ref()
+            .map(|key| Arc::new(Cipher::new(key)));
+
+        // Fail fast on a missing or wrong key *before* any recovery runs.
+        // WAL recovery treats undecryptable frames as a torn tail and
+        // truncates them — without this check a key mismatch would silently
+        // destroy data instead of erroring.
+        verify_key_check(&db_dir, cipher.as_deref())?;
+
         // Open manifest.
         let manifest_path = db_dir.join("MANIFEST");
-        let manifest = Manifest::open(&manifest_path)?;
+        let manifest = Manifest::open_with_cipher(&manifest_path, cipher.clone())?;
         let version = manifest.current_version();
 
         // Derive next table ID from existing tables.
@@ -217,7 +244,7 @@ impl StorageEngine {
 
         // Open WAL.
         let wal_path = db_dir.join("wal.log");
-        let mut wal = Wal::open_with_mode(&wal_path, config.wal_sync)?;
+        let mut wal = Wal::open_with_cipher(&wal_path, config.wal_sync, cipher.clone())?;
         wal.set_preallocate(config.wal_preallocate);
 
         // Create memtable and recover the WAL. A torn tail (partial last
@@ -263,6 +290,7 @@ impl StorageEngine {
             reader_cache: Mutex::new(HashMap::new()),
             block_cache,
             device_state: DeviceState::default(),
+            cipher,
         })
     }
 
@@ -393,10 +421,11 @@ impl StorageEngine {
         if !path.exists() {
             return Ok(None);
         }
-        let reader = Arc::new(SSTableReader::open_with_cache(
+        let reader = Arc::new(SSTableReader::open_with_cache_and_cipher(
             &path,
             Arc::clone(&self.block_cache),
             id,
+            self.cipher.clone(),
         )?);
         let mut cache = self.reader_cache.lock().unwrap_or_else(|e| e.into_inner());
         let entry = cache.entry(id).or_insert_with(|| Arc::clone(&reader));
@@ -529,7 +558,12 @@ impl StorageEngine {
         // without the block cache so this one-shot pass doesn't pollute it.
         let readers: Vec<SSTableReader> = tables
             .iter()
-            .map(|meta| SSTableReader::open(self.sstable_path(meta.id, meta.level)))
+            .map(|meta| {
+                SSTableReader::open_with_cipher(
+                    self.sstable_path(meta.id, meta.level),
+                    self.cipher.clone(),
+                )
+            })
             .collect::<Result<_, _>>()?;
 
         let new_id = self.next_table_id;
@@ -542,7 +576,9 @@ impl StorageEngine {
         };
 
         let out_path = self.sstable_path(new_id, next_level);
-        let writer = SSTableWriter::new(&out_path).with_block_size(self.config.block_size);
+        let writer = SSTableWriter::new(&out_path)
+            .with_block_size(self.config.block_size)
+            .with_cipher(self.cipher.clone());
         let write_result = writer.write(merge);
 
         // A block-read failure mid-merge surfaces via the merge state,
@@ -618,7 +654,9 @@ impl StorageEngine {
         let entry_count = entries.len() as u64;
 
         let path = self.sstable_path(table_id, 0);
-        let writer = SSTableWriter::new(&path).with_block_size(self.config.block_size);
+        let writer = SSTableWriter::new(&path)
+            .with_block_size(self.config.block_size)
+            .with_cipher(self.cipher.clone());
         writer.write(entries.into_iter())?;
 
         // Crash-ordering: the SSTable file is fsynced by the writer; also
@@ -688,6 +726,55 @@ impl StorageEngine {
         }
 
         HlcTimestamp::new(self.hlc_physical, self.hlc_logical)
+    }
+}
+
+/// Known plaintext sealed into the `KEYCHECK` sentinel file on first open
+/// of an encrypted database.
+const KEY_CHECK_PLAINTEXT: &[u8] = b"raft-db keycheck v1";
+
+/// Detect encryption-key mismatches before any recovery runs.
+///
+/// On first open with a key, seals a known plaintext into `KEYCHECK`.
+/// On subsequent opens the sentinel must decrypt back to that plaintext:
+/// - key present, sentinel missing → created (first encrypted open)
+/// - key present, sentinel fails to open → wrong key
+/// - key absent, sentinel present → database requires its key
+fn verify_key_check(db_dir: &Path, cipher: Option<&Cipher>) -> Result<(), StorageError> {
+    let path = db_dir.join("KEYCHECK");
+    match (cipher, path.exists()) {
+        (None, false) => Ok(()),
+        (None, true) => Err(StorageError::Encryption(
+            "database is encrypted but no encryption_key was provided".to_string(),
+        )),
+        (Some(cipher), true) => {
+            let sealed = fs::read(&path)?;
+            match cipher.open(&sealed) {
+                Ok(plaintext) if plaintext == KEY_CHECK_PLAINTEXT => Ok(()),
+                _ => Err(StorageError::Encryption(
+                    "encryption key does not match this database".to_string(),
+                )),
+            }
+        }
+        (Some(cipher), false) => {
+            // A pre-existing database without a sentinel is plaintext —
+            // opening it with a key is a configuration error, not a reason
+            // to plant a sentinel in an unencrypted directory.
+            if db_dir.join("MANIFEST").exists() || db_dir.join("wal.log").exists() {
+                return Err(StorageError::Encryption(
+                    "database is not encrypted but an encryption_key was provided".to_string(),
+                ));
+            }
+            let sealed = cipher
+                .seal(KEY_CHECK_PLAINTEXT)
+                .map_err(|e| StorageError::Encryption(e.to_string()))?;
+            // Persist durably: file contents, then the directory entry.
+            let mut file = fs::File::create(&path)?;
+            std::io::Write::write_all(&mut file, &sealed)?;
+            file.sync_all()?;
+            sync_dir(db_dir)?;
+            Ok(())
+        }
     }
 }
 
@@ -849,6 +936,7 @@ mod tests {
             wal_sync: SyncMode::Always,
             wal_preallocate: 1024 * 1024,
             block_cache_bytes: 4096,
+            encryption_key: None,
         }
     }
 

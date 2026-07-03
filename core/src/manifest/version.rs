@@ -2,9 +2,11 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::error::ManifestError;
-use super::record::{ManifestRecord, SSTableMeta, TableId};
+use super::record::{ManifestRecord, SSTableMeta, TableId, MAX_RECORD_LEN};
+use crate::crypto::{Cipher, SEAL_OVERHEAD};
 
 /// A point-in-time view of the database's SSTable layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,16 +37,32 @@ pub struct Manifest {
     /// Counter of records written since the last snapshot. Used to decide
     /// when to write a compaction snapshot.
     records_since_snapshot: usize,
+    /// When set (F4 encryption at rest), each record is sealed individually
+    /// and framed as `[frame_len: u32 BE][nonce || ciphertext || tag]`.
+    cipher: Option<Arc<Cipher>>,
 }
 
 /// Number of incremental records before we auto-write a snapshot to bound
 /// recovery time.
 const SNAPSHOT_INTERVAL: usize = 64;
 
+/// Upper bound on an encrypted manifest frame: max plaintext record
+/// (length prefix + tag byte + payload + crc) plus the seal overhead.
+const MAX_FRAME_LEN: usize = MAX_RECORD_LEN + 64 + SEAL_OVERHEAD;
+
 impl Manifest {
     /// Open (or create) the manifest at `path`, replaying existing records
     /// to recover the current database version.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, ManifestError> {
+        Self::open_with_cipher(path, None)
+    }
+
+    /// Open (or create) the manifest at `path` with optional encryption
+    /// at rest, replaying existing records to recover the current version.
+    pub fn open_with_cipher(
+        path: impl AsRef<Path>,
+        cipher: Option<Arc<Cipher>>,
+    ) -> Result<Self, ManifestError> {
         let path = path.as_ref().to_path_buf();
 
         let mut version = DbVersion::new();
@@ -54,12 +72,24 @@ impl Manifest {
         if path.exists() {
             let data = std::fs::read(&path)?;
             if !data.is_empty() {
-                let mut cursor: &[u8] = &data;
-                let mut offset: u64 = 0;
-                while let Some(record) = ManifestRecord::decode(&mut cursor, offset)? {
-                    Self::apply(&mut version, &record)?;
-                    offset = (data.len() - cursor.len()) as u64;
-                    records_since_snapshot += 1;
+                match &cipher {
+                    None => {
+                        let mut cursor: &[u8] = &data;
+                        let mut offset: u64 = 0;
+                        while let Some(record) = ManifestRecord::decode(&mut cursor, offset)? {
+                            Self::apply(&mut version, &record)?;
+                            offset = (data.len() - cursor.len()) as u64;
+                            records_since_snapshot += 1;
+                        }
+                    }
+                    Some(cipher) => {
+                        let mut pos: usize = 0;
+                        while pos < data.len() {
+                            let record = Self::decode_sealed_record(cipher, &data, &mut pos)?;
+                            Self::apply(&mut version, &record)?;
+                            records_since_snapshot += 1;
+                        }
+                    }
                 }
             }
         }
@@ -71,7 +101,45 @@ impl Manifest {
             file,
             version,
             records_since_snapshot,
+            cipher,
         })
+    }
+
+    /// Decode one encrypted frame `[frame_len: u32][sealed]` starting at
+    /// `*pos`, advance `*pos` past it, and return the decoded record.
+    fn decode_sealed_record(
+        cipher: &Cipher,
+        data: &[u8],
+        pos: &mut usize,
+    ) -> Result<ManifestRecord, ManifestError> {
+        let offset = *pos as u64;
+        let corrupt = |reason: String| ManifestError::CorruptRecord { offset, reason };
+
+        if data.len() - *pos < 4 {
+            return Err(corrupt("truncated frame length".to_string()));
+        }
+        let frame_len = u32::from_be_bytes(data[*pos..*pos + 4].try_into().unwrap()) as usize;
+        if !(SEAL_OVERHEAD..=MAX_FRAME_LEN).contains(&frame_len) {
+            return Err(corrupt(format!("implausible frame length {frame_len}")));
+        }
+        if data.len() - *pos - 4 < frame_len {
+            return Err(corrupt("truncated encrypted frame".to_string()));
+        }
+
+        let sealed = &data[*pos + 4..*pos + 4 + frame_len];
+        let plaintext = cipher
+            .open(sealed)
+            .map_err(|_| ManifestError::BadCiphertext { offset })?;
+
+        let mut cursor: &[u8] = &plaintext;
+        let record = ManifestRecord::decode(&mut cursor, offset)?
+            .ok_or_else(|| corrupt("empty decrypted frame".to_string()))?;
+        if !cursor.is_empty() {
+            return Err(ManifestError::BadCiphertext { offset });
+        }
+
+        *pos += 4 + frame_len;
+        Ok(record)
     }
 
     /// Register a new SSTable in the manifest.
@@ -157,7 +225,19 @@ impl Manifest {
     // ── Internal helpers ──
 
     fn write_record(&mut self, record: &ManifestRecord) -> Result<(), ManifestError> {
-        let encoded = record.encode();
+        let plaintext = record.encode();
+        let encoded = match &self.cipher {
+            Some(cipher) => {
+                let sealed = cipher
+                    .seal(&plaintext)
+                    .map_err(|e| ManifestError::Encryption(e.to_string()))?;
+                let mut framed = Vec::with_capacity(4 + sealed.len());
+                framed.extend_from_slice(&(sealed.len() as u32).to_be_bytes());
+                framed.extend_from_slice(&sealed);
+                framed
+            }
+            None => plaintext,
+        };
         self.file.write_all(&encoded)?;
         self.file.flush()?;
         // Manifest records decide which SSTables are live — losing one after
@@ -482,6 +562,102 @@ mod tests {
         // Reopen and verify.
         let m = Manifest::open(&path).unwrap();
         assert_eq!(m.table_count(), 25);
+
+        fs::remove_file(&path).ok();
+    }
+
+    // ── Encryption at rest (F4) ──
+
+    fn test_cipher(byte: u8) -> Arc<Cipher> {
+        Arc::new(Cipher::new(&crate::crypto::EncryptionKey::from_bytes(
+            [byte; crate::crypto::KEY_LEN],
+        )))
+    }
+
+    #[test]
+    fn encrypted_manifest_persists_across_reopen() {
+        let path = temp_path("encrypted_reopen");
+        let _ = fs::remove_file(&path);
+        let cipher = test_cipher(0x42);
+
+        {
+            let mut m = Manifest::open_with_cipher(&path, Some(Arc::clone(&cipher))).unwrap();
+            m.set_sequence(10).unwrap();
+            m.add_sstable(meta(1, 0)).unwrap();
+            m.add_sstable(meta(2, 1)).unwrap();
+            m.remove_sstable(1).unwrap();
+        }
+
+        {
+            let m = Manifest::open_with_cipher(&path, Some(cipher)).unwrap();
+            let v = m.current_version();
+            assert_eq!(v.sequence, 10);
+            assert_eq!(m.table_count(), 1);
+            assert!(v.tables.contains_key(&2));
+        }
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn encrypted_manifest_contains_no_plaintext_keys() {
+        let path = temp_path("encrypted_no_plaintext");
+        let _ = fs::remove_file(&path);
+
+        {
+            let mut m = Manifest::open_with_cipher(&path, Some(test_cipher(0x42))).unwrap();
+            m.add_sstable(meta(1, 0)).unwrap();
+        }
+
+        let raw = fs::read(&path).unwrap();
+        let needle = b"k001-first";
+        assert!(
+            !raw.windows(needle.len()).any(|w| w == needle),
+            "plaintext key leaked into encrypted manifest"
+        );
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn encrypted_manifest_unreadable_with_wrong_key() {
+        let path = temp_path("encrypted_wrong_key");
+        let _ = fs::remove_file(&path);
+
+        {
+            let mut m = Manifest::open_with_cipher(&path, Some(test_cipher(0x01))).unwrap();
+            m.add_sstable(meta(1, 0)).unwrap();
+        }
+
+        let result = Manifest::open_with_cipher(&path, Some(test_cipher(0x02)));
+        assert!(matches!(
+            result,
+            Err(ManifestError::BadCiphertext { .. }) | Err(ManifestError::CorruptRecord { .. })
+        ));
+
+        // No key at all: sealed frames cannot be parsed as plaintext records.
+        assert!(Manifest::open(&path).is_err());
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn encrypted_manifest_detects_tampering() {
+        let path = temp_path("encrypted_tamper");
+        let _ = fs::remove_file(&path);
+        let cipher = test_cipher(0x42);
+
+        {
+            let mut m = Manifest::open_with_cipher(&path, Some(Arc::clone(&cipher))).unwrap();
+            m.add_sstable(meta(1, 0)).unwrap();
+        }
+
+        let mut raw = fs::read(&path).unwrap();
+        let mid = raw.len() / 2;
+        raw[mid] ^= 0xFF;
+        fs::write(&path, &raw).unwrap();
+
+        assert!(Manifest::open_with_cipher(&path, Some(cipher)).is_err());
 
         fs::remove_file(&path).ok();
     }

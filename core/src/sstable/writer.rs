@@ -1,10 +1,12 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::bloom::BloomFilter;
 use super::error::SSTableError;
 use super::{DEFAULT_BLOCK_SIZE, SSTABLE_MAGIC};
+use crate::crypto::Cipher;
 
 /// Target bloom-filter false-positive rate. The filter is sized from the
 /// actual key count of each table, so this rate holds regardless of how
@@ -19,6 +21,10 @@ pub(crate) const RESTART_INTERVAL: usize = 16;
 pub struct SSTableWriter {
     path: PathBuf,
     block_size: usize,
+    /// When set (F4 encryption at rest), each data block, the bloom filter,
+    /// and the index block are sealed individually with AES-256-GCM. The
+    /// 32-byte footer stays plaintext — it holds only structural offsets.
+    cipher: Option<Arc<Cipher>>,
 }
 
 /// On-disk entry encoding inside a data block:
@@ -125,6 +131,7 @@ impl SSTableWriter {
         Self {
             path: path.as_ref().to_path_buf(),
             block_size: DEFAULT_BLOCK_SIZE,
+            cipher: None,
         }
     }
 
@@ -132,6 +139,22 @@ impl SSTableWriter {
     pub fn with_block_size(mut self, block_size: usize) -> Self {
         self.block_size = block_size.max(64);
         self
+    }
+
+    /// Enable encryption at rest: every region except the footer is sealed.
+    pub fn with_cipher(mut self, cipher: Option<Arc<Cipher>>) -> Self {
+        self.cipher = cipher;
+        self
+    }
+
+    /// Seal `data` when a cipher is configured, otherwise pass it through.
+    fn maybe_seal(&self, data: Vec<u8>) -> Result<Vec<u8>, SSTableError> {
+        match &self.cipher {
+            Some(cipher) => cipher
+                .seal(&data)
+                .map_err(|e| SSTableError::Encryption(e.to_string())),
+            None => Ok(data),
+        }
     }
 
     /// Write a complete SSTable from a **sorted** iterator of key-value pairs.
@@ -161,8 +184,9 @@ impl SSTableWriter {
 
             if block.estimated_size() >= self.block_size {
                 let finished = block.finish().expect("block is non-empty");
-                let len = finished.data.len() as u32;
-                file.write_all(&finished.data)?;
+                let data = self.maybe_seal(finished.data)?;
+                let len = data.len() as u32;
+                file.write_all(&data)?;
                 index_entries.push(IndexEntry {
                     first_key: finished.first_key,
                     offset: current_offset,
@@ -176,8 +200,9 @@ impl SSTableWriter {
         // Flush the last partial block.
         if !block.is_empty() {
             let finished = block.finish().expect("block is non-empty");
-            let len = finished.data.len() as u32;
-            file.write_all(&finished.data)?;
+            let data = self.maybe_seal(finished.data)?;
+            let len = data.len() as u32;
+            file.write_all(&data)?;
             index_entries.push(IndexEntry {
                 first_key: finished.first_key,
                 offset: current_offset,
@@ -197,13 +222,13 @@ impl SSTableWriter {
         let bloom_offset = current_offset;
         let bloom = BloomFilter::from_hashes(&key_hashes, BLOOM_FP_RATE);
         drop(key_hashes);
-        let bloom_data = bloom.encode();
+        let bloom_data = self.maybe_seal(bloom.encode())?;
         file.write_all(&bloom_data)?;
         current_offset += bloom_data.len() as u64;
 
         // ── Index block ──
         let index_offset = current_offset;
-        let index_data = Self::encode_index(&index_entries);
+        let index_data = self.maybe_seal(Self::encode_index(&index_entries))?;
         file.write_all(&index_data)?;
 
         // ── Footer (32 bytes) ──

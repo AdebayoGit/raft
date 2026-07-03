@@ -22,4 +22,12 @@ pub enum ManifestError {
 
     #[error("table id {0} not found")]
     TableNotFound(u64),
+
+    #[error(
+        "encrypted record failed authentication at offset {offset} (wrong key or corrupted data)"
+    )]
+    BadCiphertext { offset: u64 },
+
+    #[error("encryption failed: {0}")]
+    Encryption(String),
 }

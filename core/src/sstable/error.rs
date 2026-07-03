@@ -15,4 +15,12 @@ pub enum SSTableError {
 
     #[error("empty iterator — nothing to write")]
     EmptyInput,
+
+    #[error(
+        "encrypted region failed authentication at offset {offset} (wrong key or corrupted data)"
+    )]
+    BadCiphertext { offset: u64 },
+
+    #[error("encryption failed: {0}")]
+    Encryption(String),
 }

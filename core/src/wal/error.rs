@@ -20,4 +20,12 @@ pub enum WalError {
 
     #[error("payload length {len} at offset {offset} exceeds maximum {max}")]
     PayloadTooLarge { offset: u64, len: usize, max: usize },
+
+    #[error(
+        "encrypted entry failed authentication at offset {offset} (wrong key or corrupted data)"
+    )]
+    BadCiphertext { offset: u64 },
+
+    #[error("encryption failed: {0}")]
+    Encryption(String),
 }
