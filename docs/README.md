@@ -21,6 +21,7 @@ These cross-platform docs go deeper on each individual surface, with more exampl
 | Transactions | [transactions.md](transactions.md) | Optimistic concurrency with read-set tracking |
 | Observation | [observation.md](observation.md) | Live mutation events and query diffs |
 | Errors | [errors.md](errors.md) | The unified error model and per-platform mappings |
+| Memory ownership | [memory-ownership.md](memory-ownership.md) | Who allocates and frees each FFI handle, per binding |
 | Sync (merge surface) | [sync.md](sync.md) | HLCs, CRDTs, `SyncAuthority`, `ConflictStrategy`, peer integration |
 
 ## Conventions used in these docs
