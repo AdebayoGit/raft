@@ -246,6 +246,10 @@ impl StorageEngine {
 
         let block_cache = Arc::new(BlockCache::new(config.block_cache_bytes));
 
+        // Redaction (X5): the db directory path is deployment metadata,
+        // not user document data.
+        tracing::info!(path = %db_dir.display(), "storage engine opened");
+
         Ok(Self {
             db_dir,
             config,
@@ -583,6 +587,16 @@ impl StorageEngine {
         stats.tables_merged += tables.len();
         stats.levels_compacted += 1;
 
+        // Redaction (X5): counts and sizes only — never keys or values.
+        tracing::info!(
+            level,
+            next_level,
+            tables_merged = tables.len(),
+            entries = entry_count,
+            bytes = file_size,
+            "compaction pass complete"
+        );
+
         Ok(())
     }
 
@@ -628,6 +642,14 @@ impl StorageEngine {
         // Truncate WAL in place — memtable data is now durable in the
         // SSTable and registered in the (fsynced) manifest.
         self.wal.reset()?;
+
+        // Redaction (X5): counts and sizes only — never keys or values.
+        tracing::debug!(
+            table_id,
+            entries = entry_count,
+            bytes = file_size,
+            "memtable flushed to L0"
+        );
 
         Ok(())
     }

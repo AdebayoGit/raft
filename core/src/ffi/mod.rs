@@ -437,7 +437,15 @@ pub(crate) fn guard(f: impl FnOnce() -> RftError) -> RftError {
 /// Like [`guard`] but for FFI functions that do not return [`RftError`]:
 /// returns `fallback` if the body panics.
 pub(crate) fn guard_or<T>(fallback: T, f: impl FnOnce() -> T) -> T {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(fallback)
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(value) => value,
+        Err(_) => {
+            // Redaction (X5): the panic payload is deliberately not
+            // logged — panic messages can embed user data.
+            tracing::error!("panic caught at the FFI boundary");
+            fallback
+        }
+    }
 }
 
 /// Resolve a database handle against the live registry.

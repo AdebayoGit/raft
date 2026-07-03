@@ -200,12 +200,19 @@ impl Wal {
             }
         }
 
-        if truncated_at.is_some() {
+        if let Some(offset) = truncated_at {
             // Truncate the file to the valid prefix and fsync so the
             // damaged bytes can never resurface.
             self.file.set_len(pos as u64)?;
             self.file.sync_all()?;
             self.capacity = pos as u64;
+            tracing::warn!(
+                offset,
+                entries_recovered = entries.len(),
+                "wal tail truncated after corruption"
+            );
+        } else {
+            tracing::debug!(entries_recovered = entries.len(), "wal recovery complete");
         }
         self.write_pos = pos as u64;
 
