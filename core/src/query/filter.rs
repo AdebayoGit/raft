@@ -109,6 +109,34 @@ impl Filter {
             Filter::Or(_) => vec![],
         }
     }
+
+    /// If this filter is a top-level `Or` whose branches are all equality
+    /// conditions on the *same* field, return that field and the values.
+    ///
+    /// The planner uses this shape (Q6c) to serve the whole `Or` from a
+    /// union of hash-index point lookups instead of a full scan.
+    pub fn same_field_or_eqs(&self) -> Option<(&str, Vec<&Value>)> {
+        let Filter::Or(filters) = self else {
+            return None;
+        };
+        let mut field: Option<&str> = None;
+        let mut values = Vec::with_capacity(filters.len());
+        for f in filters {
+            let Filter::Condition(c) = f else {
+                return None;
+            };
+            if c.predicate != Predicate::Eq {
+                return None;
+            }
+            match field {
+                None => field = Some(&c.field),
+                Some(name) if name == c.field => {}
+                Some(_) => return None,
+            }
+            values.push(&c.value);
+        }
+        field.map(|f| (f, values))
+    }
 }
 
 fn evaluate_predicate(doc_val: &Value, predicate: Predicate, filter_val: &Value) -> bool {
@@ -301,5 +329,57 @@ mod tests {
             Filter::eq("b", Value::Int(2)),
         ]);
         assert!(f.top_level_conditions().is_empty());
+    }
+
+    // ── same_field_or_eqs ──
+
+    #[test]
+    fn same_field_or_eqs_extracts_field_and_values() {
+        let f = Filter::or(vec![
+            Filter::eq("status", Value::String("active".into())),
+            Filter::eq("status", Value::String("trial".into())),
+        ]);
+        let (field, values) = f.same_field_or_eqs().expect("same-field or of eqs");
+        assert_eq!(field, "status");
+        assert_eq!(
+            values,
+            vec![
+                &Value::String("active".into()),
+                &Value::String("trial".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn same_field_or_eqs_rejects_mixed_fields() {
+        let f = Filter::or(vec![
+            Filter::eq("a", Value::Int(1)),
+            Filter::eq("b", Value::Int(2)),
+        ]);
+        assert!(f.same_field_or_eqs().is_none());
+    }
+
+    #[test]
+    fn same_field_or_eqs_rejects_non_eq_predicates() {
+        let f = Filter::or(vec![
+            Filter::eq("a", Value::Int(1)),
+            Filter::gt("a", Value::Int(2)),
+        ]);
+        assert!(f.same_field_or_eqs().is_none());
+    }
+
+    #[test]
+    fn same_field_or_eqs_rejects_nested_combinators() {
+        let f = Filter::or(vec![
+            Filter::eq("a", Value::Int(1)),
+            Filter::and(vec![Filter::eq("a", Value::Int(2))]),
+        ]);
+        assert!(f.same_field_or_eqs().is_none());
+    }
+
+    #[test]
+    fn same_field_or_eqs_rejects_empty_and_non_or() {
+        assert!(Filter::or(vec![]).same_field_or_eqs().is_none());
+        assert!(Filter::eq("a", Value::Int(1)).same_field_or_eqs().is_none());
     }
 }

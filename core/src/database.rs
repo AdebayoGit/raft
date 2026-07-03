@@ -19,7 +19,7 @@
 //! Available without features (`async` / `ffi` not required) — observers
 //! and live queries are gated behind `async`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, TryLockError};
 use std::time::Duration;
@@ -82,7 +82,11 @@ const SCHEMA_SUFFIX: &[u8] = b"/__schema__";
 /// and increment on every write, enabling optimistic concurrency control.
 #[derive(Debug)]
 struct CollectionState {
-    docs: HashMap<DocId, Document>,
+    /// Keyed by a `BTreeMap` so iteration yields ids ascending — the
+    /// query executor's determinism (and its top-k tie-break) relies on
+    /// candidates arriving in ascending id order without a per-query
+    /// sort (Q6b).
+    docs: BTreeMap<DocId, Document>,
     versions: HashMap<DocId, u64>,
     next_version: u64,
     next_doc_id: u64,
@@ -95,7 +99,7 @@ struct CollectionState {
 impl Default for CollectionState {
     fn default() -> Self {
         Self {
-            docs: HashMap::new(),
+            docs: BTreeMap::new(),
             versions: HashMap::new(),
             next_version: 1,
             next_doc_id: 1,
@@ -545,9 +549,8 @@ impl Database {
         let Some(state) = collections.get(collection) else {
             return Vec::new();
         };
-        let mut ids: Vec<DocId> = state.docs.keys().copied().collect();
-        ids.sort();
-        ids
+        // BTreeMap keys iterate ascending — no sort needed.
+        state.docs.keys().copied().collect()
     }
 
     /// Number of documents in `collection`.
@@ -844,9 +847,8 @@ impl DocumentStore for CollectionView<'_> {
         let Some(s) = self.state else {
             return Vec::new();
         };
-        let mut ids: Vec<DocId> = s.docs.keys().copied().collect();
-        ids.sort();
-        ids
+        // Already ascending: `docs` is a BTreeMap keyed by id (Q6b).
+        s.docs.keys().copied().collect()
     }
 
     fn count(&self) -> usize {

@@ -51,6 +51,21 @@ impl QueryExecutor {
                 }
             }
 
+            ScanStrategy::HashUnion { field, keys } => {
+                if let Some(idx) = indexes.hash.get(field) {
+                    let mut ids: Vec<DocId> = keys.iter().flat_map(|k| idx.lookup(k)).collect();
+                    // Different keys can never share an id, but sorting
+                    // restores the ascending-id order the top-k tie-break
+                    // below relies on; dedup guards against overlap if a
+                    // planner ever emits duplicate keys.
+                    ids.sort_unstable();
+                    ids.dedup();
+                    ids
+                } else {
+                    store.all_doc_ids()
+                }
+            }
+
             ScanStrategy::BTreeRange {
                 field,
                 start,
@@ -328,6 +343,103 @@ mod tests {
         assert!(results
             .iter()
             .all(|d| d.get("active") == Some(&Value::Bool(true))));
+    }
+
+    // ── Hash union (same-field Or of equalities, Q6c) ──
+
+    #[test]
+    fn hash_union_or_lookup() {
+        let store = sample_store();
+        let hash_idx = build_hash_index(&store, "name");
+        let mut hash_map = HashMap::new();
+        hash_map.insert("name".to_string(), hash_idx);
+
+        let q = Query::collection("users").filter(Filter::or(vec![
+            Filter::eq("name", Value::String("Alice".into())),
+            Filter::eq("name", Value::String("Eve".into())),
+        ]));
+        let indexes = vec![IndexInfo {
+            field: "name".into(),
+            kind: IndexKind::Hash,
+            entry_count: 5,
+        }];
+        let plan = QueryPlanner::plan(&q, &indexes, store.count());
+        assert!(matches!(plan.strategy, ScanStrategy::HashUnion { .. }));
+
+        let btree_map = HashMap::new();
+        let idx_set = IndexSet {
+            hash: &hash_map,
+            btree: &btree_map,
+        };
+        let results = QueryExecutor::execute(&q, &plan, &store, &idx_set);
+        let mut names: Vec<_> = results
+            .iter()
+            .filter_map(|d| d.get("name").cloned())
+            .collect();
+        names.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(
+            names,
+            vec![Value::String("Alice".into()), Value::String("Eve".into()),]
+        );
+    }
+
+    #[test]
+    fn hash_union_duplicate_keys_dedup() {
+        let store = sample_store();
+        let hash_idx = build_hash_index(&store, "name");
+        let mut hash_map = HashMap::new();
+        hash_map.insert("name".to_string(), hash_idx);
+        let btree_map = HashMap::new();
+        let idx_set = IndexSet {
+            hash: &hash_map,
+            btree: &btree_map,
+        };
+
+        // Same key twice — the union must not return the doc twice.
+        let key = Value::String("Alice".into()).to_index_bytes();
+        let q = Query::collection("users").filter(Filter::or(vec![
+            Filter::eq("name", Value::String("Alice".into())),
+            Filter::eq("name", Value::String("Alice".into())),
+        ]));
+        let plan = QueryPlan {
+            strategy: ScanStrategy::HashUnion {
+                field: "name".into(),
+                keys: vec![key.clone(), key],
+            },
+            estimated_cost: 2,
+        };
+        let results = QueryExecutor::execute(&q, &plan, &store, &idx_set);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, DocId(1));
+    }
+
+    #[test]
+    fn hash_union_missing_index_falls_back_to_scan() {
+        let store = sample_store();
+        let (hash, btree) = empty_indexes();
+        let idx_set = IndexSet {
+            hash: &hash,
+            btree: &btree,
+        };
+
+        let q = Query::collection("users").filter(Filter::or(vec![
+            Filter::eq("name", Value::String("Bob".into())),
+            Filter::eq("name", Value::String("Diana".into())),
+        ]));
+        let plan = QueryPlan {
+            strategy: ScanStrategy::HashUnion {
+                field: "name".into(),
+                keys: vec![
+                    Value::String("Bob".into()).to_index_bytes(),
+                    Value::String("Diana".into()).to_index_bytes(),
+                ],
+            },
+            estimated_cost: 2,
+        };
+        // No hash index registered — falls back to scanning everything,
+        // then the filter narrows the results.
+        let results = QueryExecutor::execute(&q, &plan, &store, &idx_set);
+        assert_eq!(results.len(), 2);
     }
 
     // ── Hash index ──
