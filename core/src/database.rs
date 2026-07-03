@@ -554,6 +554,37 @@ impl Database {
     }
 
     /// Number of documents in `collection`.
+    /// Visit every document in `collection` in ascending id order without
+    /// cloning any of them. The collections read lock is held for the whole
+    /// walk, so `f` must be quick and must not call back into the database.
+    ///
+    /// This is the zero-copy backbone of the FFI scan path: documents are
+    /// encoded straight out of the in-memory state.
+    pub fn for_each_doc(&self, collection: &str, mut f: impl FnMut(&Document)) {
+        let collections = self.inner.read_collections();
+        if let Some(state) = collections.get(collection) {
+            for doc in state.docs.values() {
+                f(doc);
+            }
+        }
+    }
+
+    /// Run `f` against the document with `id` without cloning it, or
+    /// return `None` if it does not exist. Same locking contract as
+    /// [`for_each_doc`](Self::for_each_doc).
+    pub fn with_doc<R>(
+        &self,
+        collection: &str,
+        id: DocId,
+        f: impl FnOnce(&Document) -> R,
+    ) -> Option<R> {
+        let collections = self.inner.read_collections();
+        collections
+            .get(collection)
+            .and_then(|state| state.docs.get(&id))
+            .map(f)
+    }
+
     pub fn count(&self, collection: &str) -> usize {
         let collections = self.inner.read_collections();
         collections
@@ -1069,11 +1100,14 @@ impl DbTransaction {
         // regardless of how many documents it touches (S7f).
         let deletes: Vec<(String, DocId)> = self.delete_set.drain().collect();
         let mut ops: Vec<BatchOp> = Vec::with_capacity(writes.len() + deletes.len());
-        for ((coll, id), _, payload) in &writes {
+        // Payloads move into the batch ops — no per-document copy.
+        let mut applied: Vec<((String, DocId), Document)> = Vec::with_capacity(writes.len());
+        for ((coll, id), doc, payload) in writes {
             ops.push(BatchOp::Put {
-                key: doc_key(coll, *id),
-                value: payload.clone(),
+                key: doc_key(&coll, id),
+                value: payload,
             });
+            applied.push(((coll, id), doc));
         }
         for (coll, id) in &deletes {
             ops.push(BatchOp::Delete {
@@ -1088,7 +1122,7 @@ impl DbTransaction {
         let mut events: Vec<MutationEvent> = Vec::new();
 
         let mut collections = self.inner.write_collections();
-        for ((coll, id), doc, _) in writes {
+        for ((coll, id), doc) in applied {
             let state = collections.entry(coll.clone()).or_default();
             let old = state.docs.remove(&id);
             let was_present = old.is_some();
@@ -1261,12 +1295,26 @@ fn id_counter_key(collection: &str) -> Vec<u8> {
     k
 }
 
+/// First byte of a binary-codec document. JSON documents always start
+/// with `{` (0x7B), so 0x00 unambiguously marks the binary format —
+/// stores written by older versions keep loading through the JSON arm
+/// with no migration step.
+const DOC_BINARY_MAGIC: u8 = 0x00;
+
 fn serialize_doc(doc: &Document) -> Result<Vec<u8>, DatabaseError> {
-    serde_json::to_vec(doc).map_err(|e| DatabaseError::Decode(e.to_string()))
+    let mut out = Vec::with_capacity(64);
+    out.push(DOC_BINARY_MAGIC);
+    crate::codec::encode_doc(doc, &mut out);
+    Ok(out)
 }
 
 fn deserialize_doc(bytes: &[u8]) -> Result<Document, DatabaseError> {
-    serde_json::from_slice(bytes).map_err(|e| DatabaseError::Decode(e.to_string()))
+    match bytes.first() {
+        Some(&DOC_BINARY_MAGIC) => crate::codec::decode_doc(&bytes[1..])
+            .map_err(|_| DatabaseError::Decode("invalid binary document".into())),
+        // Legacy stores: JSON-encoded documents.
+        _ => serde_json::from_slice(bytes).map_err(|e| DatabaseError::Decode(e.to_string())),
+    }
 }
 
 #[cfg(all(test, feature = "ffi"))]
@@ -1308,6 +1356,27 @@ mod tests {
         let got = db.get("users", DocId(1)).unwrap();
         assert_eq!(got.get("name"), Some(&Value::String("Alice".into())));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn deserialize_reads_legacy_json_documents() {
+        // Stores written before the binary codec hold JSON-encoded docs;
+        // the 0x00 magic gate must route them through the JSON arm forever.
+        let doc = user(9, "Legacy", 77);
+        let json = serde_json::to_vec(&doc).unwrap();
+        assert_ne!(
+            json[0], DOC_BINARY_MAGIC,
+            "JSON must not collide with magic"
+        );
+        let decoded = deserialize_doc(&json).unwrap();
+        assert_eq!(decoded.id, DocId(9));
+        assert_eq!(decoded.get("name"), Some(&Value::String("Legacy".into())));
+
+        // And the new format roundtrips through the same entry point.
+        let bin = serialize_doc(&doc).unwrap();
+        assert_eq!(bin[0], DOC_BINARY_MAGIC);
+        let decoded = deserialize_doc(&bin).unwrap();
+        assert_eq!(decoded.get("age"), Some(&Value::Int(77)));
     }
 
     #[test]
