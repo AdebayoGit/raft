@@ -13,6 +13,11 @@ import Foundation
 /// - 7 = TransactionConflict
 /// - 8 = InvalidHandle
 /// - 9 = UnknownSubscription
+/// - 10 = InternalPanic
+/// - 11 = InvalidPath
+/// - 12 = DartApiNotInitialized
+/// - 13 = PayloadTooLarge
+/// - 14 = UnsupportedVersion
 public enum RaftError: Error, Equatable, CustomStringConvertible {
 
     /// A required pointer argument was null (code 1).
@@ -44,6 +49,22 @@ public enum RaftError: Error, Equatable, CustomStringConvertible {
     /// A subscription id passed to `rft_unobserve` is not registered (code 9).
     case unknownSubscription
 
+    /// The native core panicked; close and reopen the database (code 10).
+    case internalPanic
+
+    /// The database path is invalid or escapes the confinement root (code 11).
+    case invalidPath
+
+    /// The Dart API was used before `rft_dart_init` — not applicable on
+    /// Swift platforms (code 12).
+    case dartApiNotInitialized
+
+    /// A JSON payload exceeds its size cap (code 13).
+    case payloadTooLarge
+
+    /// A JSON envelope declared an unsupported schema version (code 14).
+    case unsupportedVersion
+
     /// An unknown error code was returned.
     case unknown(UInt32)
 
@@ -61,6 +82,11 @@ public enum RaftError: Error, Equatable, CustomStringConvertible {
         case .transactionConflict: return 7
         case .invalidHandle:       return 8
         case .unknownSubscription: return 9
+        case .internalPanic:       return 10
+        case .invalidPath:         return 11
+        case .dartApiNotInitialized: return 12
+        case .payloadTooLarge:     return 13
+        case .unsupportedVersion:  return 14
         case .unknown(let c):      return c
         }
     }
@@ -80,6 +106,11 @@ public enum RaftError: Error, Equatable, CustomStringConvertible {
         case 7: return .transactionConflict
         case 8: return .invalidHandle
         case 9: return .unknownSubscription
+        case 10: return .internalPanic
+        case 11: return .invalidPath
+        case 12: return .dartApiNotInitialized
+        case 13: return .payloadTooLarge
+        case 14: return .unsupportedVersion
         default: return .unknown(code)
         }
     }
@@ -113,6 +144,16 @@ public enum RaftError: Error, Equatable, CustomStringConvertible {
             return "RaftError.invalidHandle: Native handle is invalid or already consumed"
         case .unknownSubscription:
             return "RaftError.unknownSubscription: Subscription id is not registered"
+        case .internalPanic:
+            return "RaftError.internalPanic: Internal panic in native core; close and reopen the database"
+        case .invalidPath:
+            return "RaftError.invalidPath: Invalid database path (empty, contains \"..\", or escapes the confinement root)"
+        case .dartApiNotInitialized:
+            return "RaftError.dartApiNotInitialized: Dart API not initialized (rft_dart_init was not called)"
+        case .payloadTooLarge:
+            return "RaftError.payloadTooLarge: JSON payload exceeds its size cap"
+        case .unsupportedVersion:
+            return "RaftError.unsupportedVersion: JSON envelope declared an unsupported schema version"
         case .unknown(let c):
             return "RaftError.unknown: Unknown error code \(c)"
         }

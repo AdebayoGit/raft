@@ -71,6 +71,31 @@ class RaftDbTest {
     }
 
     @Test
+    fun `error code 10 maps to InternalPanic`() {
+        assertTrue(RaftError.fromCode(10) is RaftError.InternalPanic)
+    }
+
+    @Test
+    fun `error code 11 maps to InvalidPath`() {
+        assertTrue(RaftError.fromCode(11) is RaftError.InvalidPath)
+    }
+
+    @Test
+    fun `error code 12 maps to DartApiNotInitialized`() {
+        assertTrue(RaftError.fromCode(12) is RaftError.DartApiNotInitialized)
+    }
+
+    @Test
+    fun `error code 13 maps to PayloadTooLarge`() {
+        assertTrue(RaftError.fromCode(13) is RaftError.PayloadTooLarge)
+    }
+
+    @Test
+    fun `error code 14 maps to UnsupportedVersion`() {
+        assertTrue(RaftError.fromCode(14) is RaftError.UnsupportedVersion)
+    }
+
+    @Test
     fun `unknown error code maps to Unknown`() {
         val error = RaftError.fromCode(99)
         assertTrue(error is RaftError.Unknown)
@@ -116,6 +141,11 @@ class RaftDbTest {
             RaftError.TransactionConflict(),
             RaftError.InvalidHandle(),
             RaftError.UnknownSubscription(),
+            RaftError.InternalPanic(),
+            RaftError.InvalidPath(),
+            RaftError.DartApiNotInitialized(),
+            RaftError.PayloadTooLarge(),
+            RaftError.UnsupportedVersion(),
             RaftError.Unknown(42),
         )
         for (error in errors) {
@@ -141,6 +171,11 @@ class RaftDbTest {
         assertTrue(RaftError.TransactionConflict().message!!.contains("conflict"))
         assertTrue(RaftError.InvalidHandle().message!!.contains("handle"))
         assertTrue(RaftError.UnknownSubscription().message!!.contains("ubscription"))
+        assertTrue(RaftError.InternalPanic().message!!.contains("panic"))
+        assertTrue(RaftError.InvalidPath().message!!.contains("path"))
+        assertTrue(RaftError.DartApiNotInitialized().message!!.contains("Dart API"))
+        assertTrue(RaftError.PayloadTooLarge().message!!.contains("size cap"))
+        assertTrue(RaftError.UnsupportedVersion().message!!.contains("version"))
     }
 
     // -- QueryResult ---------------------------------------------------------

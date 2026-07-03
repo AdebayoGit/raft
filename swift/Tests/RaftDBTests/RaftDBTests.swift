@@ -45,6 +45,26 @@ final class RaftErrorTests: XCTestCase {
         XCTAssertEqual(RaftError.fromCode(9), .unknownSubscription)
     }
 
+    func testCode10MapsToInternalPanic() {
+        XCTAssertEqual(RaftError.fromCode(10), .internalPanic)
+    }
+
+    func testCode11MapsToInvalidPath() {
+        XCTAssertEqual(RaftError.fromCode(11), .invalidPath)
+    }
+
+    func testCode12MapsToDartApiNotInitialized() {
+        XCTAssertEqual(RaftError.fromCode(12), .dartApiNotInitialized)
+    }
+
+    func testCode13MapsToPayloadTooLarge() {
+        XCTAssertEqual(RaftError.fromCode(13), .payloadTooLarge)
+    }
+
+    func testCode14MapsToUnsupportedVersion() {
+        XCTAssertEqual(RaftError.fromCode(14), .unsupportedVersion)
+    }
+
     func testUnknownCodeMapsToUnknown() {
         let error = RaftError.fromCode(99)
         XCTAssertEqual(error, .unknown(99))
@@ -83,6 +103,11 @@ final class RaftErrorTests: XCTestCase {
             (7, .transactionConflict),
             (8, .invalidHandle),
             (9, .unknownSubscription),
+            (10, .internalPanic),
+            (11, .invalidPath),
+            (12, .dartApiNotInitialized),
+            (13, .payloadTooLarge),
+            (14, .unsupportedVersion),
         ]
         for (code, expected) in cases {
             let mapped = RaftError.fromCode(code)
@@ -101,6 +126,11 @@ final class RaftErrorTests: XCTestCase {
         XCTAssertTrue(RaftError.transactionConflict.description.contains("conflict"))
         XCTAssertTrue(RaftError.invalidHandle.description.contains("handle"))
         XCTAssertTrue(RaftError.unknownSubscription.description.contains("ubscription"))
+        XCTAssertTrue(RaftError.internalPanic.description.contains("panic"))
+        XCTAssertTrue(RaftError.invalidPath.description.contains("path"))
+        XCTAssertTrue(RaftError.dartApiNotInitialized.description.contains("Dart API"))
+        XCTAssertTrue(RaftError.payloadTooLarge.description.contains("size cap"))
+        XCTAssertTrue(RaftError.unsupportedVersion.description.contains("version"))
         XCTAssertTrue(RaftError.unknown(42).description.contains("42"))
     }
 
@@ -115,6 +145,11 @@ final class RaftErrorTests: XCTestCase {
             RaftError.transactionConflict,
             RaftError.invalidHandle,
             RaftError.unknownSubscription,
+            RaftError.internalPanic,
+            RaftError.invalidPath,
+            RaftError.dartApiNotInitialized,
+            RaftError.payloadTooLarge,
+            RaftError.unsupportedVersion,
             RaftError.unknown(99),
         ]
         for error in errors {

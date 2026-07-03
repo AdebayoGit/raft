@@ -2,6 +2,7 @@ import { NitroModules } from 'react-native-nitro-modules'
 import type { Raft as RaftSpec, QueryResult } from './specs/raft.nitro'
 
 export type { QueryResult }
+export { RaftError, RaftErrorCode, raftErrorMessage } from './errors'
 
 const RaftHybrid = NitroModules.createHybridObject<RaftSpec>('Raft')
 

@@ -89,6 +89,17 @@ void main() {
       expect(ex.message, contains('Dart API'));
     });
 
+    test('code 13 mentions size cap', () {
+      final ex = RaftDbException.fromCode(13);
+      expect(ex.message.toLowerCase(), contains('size cap'));
+    });
+
+    test('code 14 mentions unsupported version', () {
+      final ex = RaftDbException.fromCode(14);
+      expect(ex.message.toLowerCase(), contains('unsupported'));
+      expect(ex.message.toLowerCase(), contains('version'));
+    });
+
     test('unknown code falls back to generic message including code', () {
       final ex = RaftDbException.fromCode(99);
       expect(ex.code, 99);
@@ -97,7 +108,7 @@ void main() {
     });
 
     test('all known codes round-trip through code field', () {
-      for (final code in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
+      for (final code in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
         final ex = RaftDbException.fromCode(code);
         expect(ex.code, code, reason: 'code $code should round-trip');
       }

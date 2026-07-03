@@ -14,6 +14,11 @@ package com.raftdb
  * - 7 = TransactionConflict
  * - 8 = InvalidHandle
  * - 9 = UnknownSubscription
+ * - 10 = InternalPanic
+ * - 11 = InvalidPath
+ * - 12 = DartApiNotInitialized
+ * - 13 = PayloadTooLarge
+ * - 14 = UnsupportedVersion
  */
 sealed class RaftError(message: String) : Exception(message) {
 
@@ -46,6 +51,29 @@ sealed class RaftError(message: String) : Exception(message) {
     /** A subscription id passed to unobserve is not registered (code 9). */
     class UnknownSubscription : RaftError("Subscription id is not registered")
 
+    /** The native core panicked; close and reopen the database (code 10). */
+    class InternalPanic : RaftError(
+        "Internal panic in native core; close and reopen the database",
+    )
+
+    /** The database path is invalid or escapes the confinement root (code 11). */
+    class InvalidPath : RaftError(
+        "Invalid database path (empty, contains \"..\", or escapes the confinement root)",
+    )
+
+    /** The Dart API was used before rft_dart_init — not applicable on Android (code 12). */
+    class DartApiNotInitialized : RaftError(
+        "Dart API not initialized (rft_dart_init was not called)",
+    )
+
+    /** A JSON payload exceeds its size cap (code 13). */
+    class PayloadTooLarge : RaftError("JSON payload exceeds its size cap")
+
+    /** A JSON envelope declared an unsupported schema version (code 14). */
+    class UnsupportedVersion : RaftError(
+        "JSON envelope declared an unsupported schema version",
+    )
+
     /** An unknown error code was returned (defensive). */
     class Unknown(code: Int) : RaftError("Unknown raft error code: $code")
 
@@ -62,6 +90,11 @@ sealed class RaftError(message: String) : Exception(message) {
             7 -> TransactionConflict()
             8 -> InvalidHandle()
             9 -> UnknownSubscription()
+            10 -> InternalPanic()
+            11 -> InvalidPath()
+            12 -> DartApiNotInitialized()
+            13 -> PayloadTooLarge()
+            14 -> UnsupportedVersion()
             else -> Unknown(code)
         }
 

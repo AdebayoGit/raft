@@ -54,6 +54,8 @@ class RaftDbException implements Exception {
         'Invalid database path (empty, contains "..", or escapes the '
             'confinement root)',
       12 => 'Dart API not initialized (rft_dart_init was not called)',
+      13 => 'JSON payload exceeds its size cap',
+      14 => 'JSON envelope declared an unsupported schema version',
       _ => 'Unknown error (code $code)',
     };
     return RaftDbException(message, code: code);
