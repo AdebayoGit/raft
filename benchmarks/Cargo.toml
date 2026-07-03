@@ -1,0 +1,23 @@
+[package]
+name = "raft-benchmarks"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Public, reproducible benchmark suite comparing raft-db against SQLite (X9)"
+
+# Standalone crate: rusqlite and criterion are benchmark-harness
+# dependencies only and must never enter raft-db's own dependency tree.
+
+[dependencies]
+raftdb = { package = "raft-db", path = "../core", features = ["ffi"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "comparison"
+harness = false
+
+[profile.bench]
+debug = false
