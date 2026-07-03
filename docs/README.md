@@ -24,6 +24,7 @@ These cross-platform docs go deeper on each individual surface, with more exampl
 | Memory ownership | [memory-ownership.md](memory-ownership.md) | Who allocates and frees each FFI handle, per binding |
 | Thread affinity | [threading.md](threading.md) | Which thread callbacks fire on and how bindings marshal them |
 | Sync (merge surface) | [sync.md](sync.md) | HLCs, CRDTs, `SyncAuthority`, `ConflictStrategy`, peer integration |
+| Merge-surface contract | [merge-surface-contract.md](merge-surface-contract.md) | Stable surfaces, versioned formats, semver policy for peer integrators |
 
 ## Conventions used in these docs
 
