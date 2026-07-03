@@ -1,0 +1,21 @@
+name: raft_bench_native
+description: Dart-VM adapters for the native-SDK engines (Isar, ObjectBox, Realm) to get headless all-engine numbers.
+publish_to: none
+version: 0.1.0
+environment:
+  sdk: ^3.8.0
+dependencies:
+  raft_bench:
+    path: ../bench
+  ffi: ^2.1.0
+  path: ^1.9.0
+  hive: ^2.2.3
+  sqflite_common_ffi: ^2.3.3
+  objectbox: ^4.0.3
+  isar_community: ^3.1.8
+  realm_dart: ^20.0.1
+dev_dependencies:
+  lints: ^4.0.0
+  build_runner: ^2.4.13
+  objectbox_generator: ^4.0.3
+  isar_community_generator: ^3.1.8

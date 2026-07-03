@@ -1,0 +1,9 @@
+.dart_tool/
+.packages
+build/
+# Downloaded native libraries are fetched per-machine, never committed.
+*.dylib
+*.so
+libobjectbox.dylib
+libisar.dylib
+results/
