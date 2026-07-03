@@ -32,7 +32,7 @@ use crate::query::{
 use crate::schema::{
     validate_document, validate_evolution, EvolutionResult, Schema, SchemaViolation,
 };
-use crate::transaction::{TransactionError, VersionedDocument, VersionedStore};
+use crate::transaction::TransactionError;
 
 #[cfg(feature = "async")]
 use crate::reactive::{EventBus, MutationEvent, MutationOrigin, MutationType};
@@ -1173,52 +1173,6 @@ impl DbTransaction {
             return Err(TransactionError::AlreadyFinalised);
         }
         Ok(())
-    }
-}
-
-/// Implements `VersionedStore` so the existing single-collection
-/// transaction code in [`crate::transaction`] can run against a
-/// [`Database`] view as well. Restricted to a single collection, since
-/// `VersionedStore` is collection-agnostic.
-impl VersionedStore for Database {
-    fn get_versioned(&self, id: DocId) -> Option<VersionedDocument> {
-        // Without a collection name, this trait is only meaningful when
-        // the caller pre-filters to a single collection. We pick the first
-        // collection that contains the id — fine for tests; FFI uses
-        // `DbTransaction` directly.
-        let collections = self.inner.read_collections();
-        for state in collections.values() {
-            if let Some(doc) = state.docs.get(&id) {
-                return Some(VersionedDocument {
-                    document: doc.clone(),
-                    version: state.versions.get(&id).copied().unwrap_or(0),
-                });
-            }
-        }
-        None
-    }
-
-    fn current_version(&self, id: DocId) -> Option<u64> {
-        let collections = self.inner.read_collections();
-        for state in collections.values() {
-            if let Some(v) = state.versions.get(&id) {
-                return Some(*v);
-            }
-        }
-        None
-    }
-
-    fn apply_batch(
-        &self,
-        _read_set: &[(DocId, u64)],
-        _puts: Vec<Document>,
-        _deletes: &[DocId],
-    ) -> Result<(), TransactionError> {
-        // Not implemented: callers should use `Database::begin_transaction`
-        // which is collection-aware. The trait impl exists only for the
-        // narrow case where a test wants to swap MemVersionedStore for a
-        // Database.
-        Err(TransactionError::AlreadyFinalised)
     }
 }
 
