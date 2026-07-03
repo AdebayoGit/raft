@@ -15,6 +15,26 @@
 #define RAFT_DB_FFI
 
 
+/**
+ * Key length in bytes (AES-256).
+ */
+#define KEY_LEN 32
+
+/**
+ * Nonce length in bytes (GCM standard, 96 bits).
+ */
+#define NONCE_LEN 12
+
+/**
+ * Authentication tag length in bytes.
+ */
+#define TAG_LEN 16
+
+/**
+ * Bytes added to a plaintext by [`Cipher::seal`]: nonce prefix + GCM tag.
+ */
+#define SEAL_OVERHEAD (NONCE_LEN + TAG_LEN)
+
 #if defined(RAFT_DB_FFI)
 /**
  * Maximum accepted size, in bytes, of a document JSON envelope
@@ -207,6 +227,16 @@ typedef struct RaftTransaction RaftTransaction;
 
 #if defined(RAFT_DB_FFI)
 /**
+ * Opaque engine-owned byte buffer. Returned by [`rft_collection_scan`];
+ * read it via [`rft_buf_data`] / [`rft_buf_len`] and release it with
+ * [`rft_buf_free`]. One scan = one engine pass = four FFI crossings
+ * total, regardless of document count.
+ */
+typedef struct RftBuf RftBuf;
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
  * C-compatible callback signature.
  *
  * `event_json` is a null-terminated UTF-8 string valid only for the
@@ -329,6 +359,120 @@ RftError rft_get(struct RaftDb *db,
  * - `key` must point to at least `key_len` readable bytes.
  */
 RftError rft_delete(struct RaftDb *db, const uint8_t *key, uintptr_t key_len);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Pointer to the buffer's bytes. Valid until [`rft_buf_free`].
+ *
+ * # Safety
+ *
+ * `buf` must be a live handle from [`rft_collection_scan`] (or null,
+ * which yields null).
+ */
+const uint8_t *rft_buf_data(const struct RftBuf *buf);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Length in bytes of the buffer. Null yields 0.
+ *
+ * # Safety
+ *
+ * `buf` must be a live handle from [`rft_collection_scan`] or null.
+ */
+uintptr_t rft_buf_len(const struct RftBuf *buf);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Free a buffer handle. Null is a no-op. After this call the handle and
+ * any pointer previously returned by [`rft_buf_data`] are dangling.
+ *
+ * # Safety
+ *
+ * `buf` must be a handle from [`rft_collection_scan`] not yet freed, or
+ * null.
+ */
+void rft_buf_free(struct RftBuf *buf);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Insert or update every document in `batch` (binary batch encoding)
+ * atomically: one transaction, one WAL write, one fsync. Document ids
+ * are honoured; repeated ids within the batch apply in order (last one
+ * wins).
+ *
+ * The whole batch is validated before anything is written — a malformed
+ * document rejects the entire call with no partial effects.
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle from [`rft_open`](super::rft_open).
+ * - `collection` must be a valid null-terminated UTF-8 C string.
+ * - `batch` must point to `batch_len` readable bytes (null only if
+ *   `batch_len == 0`).
+ */
+RftError rft_collection_put_many(struct RaftDb *db,
+                                 const char *collection,
+                                 const uint8_t *batch,
+                                 uintptr_t batch_len);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Delete every id in `ids` atomically: one transaction, one WAL write,
+ * one fsync. Missing ids are not an error (tombstones are written).
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle; `collection` a valid null-terminated
+ *   UTF-8 C string.
+ * - `ids` must point to `count` readable `u64`s (null only if
+ *   `count == 0`).
+ */
+RftError rft_collection_delete_many(struct RaftDb *db,
+                                    const char *collection,
+                                    const uint64_t *ids,
+                                    uintptr_t count);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Read every document in `collection` in one call. On success writes a
+ * new buffer handle (binary batch encoding, ids ascending) to
+ * `*out_buf`; the caller owns it and must release it with
+ * [`rft_buf_free`].
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle; `collection` a valid null-terminated
+ *   UTF-8 C string; `out_buf` a writable `*mut *mut RftBuf`.
+ */
+RftError rft_collection_scan(struct RaftDb *db, const char *collection, struct RftBuf **out_buf);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Fetch one document by id as binary codec bytes — the single-lookup
+ * replacement for the two-phase JSON `rft_collection_get`. `*out_len`
+ * carries the buffer capacity in and the written (or required) size
+ * out; on `BufferTooSmall` nothing is copied and the caller retries
+ * with a larger buffer (rare when reusing a sensibly-sized one).
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle; `collection` a valid null-terminated
+ *   UTF-8 C string.
+ * - `out_len` must be a valid `*mut usize`; `out_buf` must point to
+ *   `*out_len` writable bytes (or be null to only query the size).
+ */
+RftError rft_collection_get_buf(struct RaftDb *db,
+                                const char *collection,
+                                uint64_t doc_id,
+                                uint8_t *out_buf,
+                                uintptr_t *out_len);
 #endif
 
 #if defined(RAFT_DB_FFI)

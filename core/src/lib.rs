@@ -1,4 +1,6 @@
 pub mod backup;
+#[cfg(feature = "ffi")]
+pub(crate) mod codec;
 pub mod compaction;
 pub mod crdt;
 pub mod crypto;

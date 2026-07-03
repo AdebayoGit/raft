@@ -40,6 +40,7 @@
 //! Gated behind the `ffi` feature flag, which also turns on `async`
 //! (required by observers) and `serde_json`.
 
+mod bulk;
 mod collection;
 mod dart_port;
 mod error;
@@ -49,6 +50,10 @@ mod query;
 mod registry;
 mod transaction;
 
+pub use bulk::{
+    rft_buf_data, rft_buf_free, rft_buf_len, rft_collection_delete_many, rft_collection_get_buf,
+    rft_collection_put_many, rft_collection_scan, RftBuf,
+};
 pub use collection::{
     rft_collection_count, rft_collection_delete, rft_collection_get, rft_collection_list_ids,
     rft_collection_put, rft_collection_put_auto,
