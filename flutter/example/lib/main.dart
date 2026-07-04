@@ -33,22 +33,19 @@ class _MyAppState extends State<MyApp> {
       final db = await RaftDb.open(dbPath);
 
       // Write
-      await db.put(
-        utf8.encode('greeting'),
-        utf8.encode('Hello from Raft!'),
-      );
+      await db.put(utf8.encode('greeting'), utf8.encode('Hello from Raft!'));
 
       // Read
       final value = await db.get(utf8.encode('greeting'));
-      final decoded =
-          value != null ? utf8.decode(value) : '<not found>';
+      final decoded = value != null ? utf8.decode(value) : '<not found>';
 
       // Clean up
       await db.delete(utf8.encode('greeting'));
       await db.close();
 
       setState(() {
-        _status = 'Running on: ${Platform.operatingSystem}\n'
+        _status =
+            'Running on: ${Platform.operatingSystem}\n'
             'Value: $decoded';
       });
     } catch (e) {
@@ -63,9 +60,7 @@ class _MyAppState extends State<MyApp> {
     return MaterialApp(
       home: Scaffold(
         appBar: AppBar(title: const Text('Raft DB Example')),
-        body: Center(
-          child: Text(_status),
-        ),
+        body: Center(child: Text(_status)),
       ),
     );
   }
