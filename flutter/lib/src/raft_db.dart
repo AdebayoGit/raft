@@ -9,6 +9,7 @@ import 'package:ffi/ffi.dart';
 
 import 'raft_collection.dart';
 import 'raft_db_bindings.dart' as bindings;
+import 'raft_doc.dart';
 import 'raft_events.dart';
 import 'raft_transaction.dart';
 
@@ -85,6 +86,57 @@ class RaftDb {
   final int _address;
   bool _closed = false;
 
+  /// Bindings bound on the opening isolate — the synchronous fast paths
+  /// (typed collections) run here, without a per-call isolate hop.
+  late final bindings.RaftDbBindings _syncBindings = bindings.RaftDbBindings(
+    _openLib(),
+  );
+
+  /// Typed collections opened from this database, closed automatically
+  /// (before the native handle) by [close].
+  final List<RaftCollection<dynamic>> _collections = [];
+
+  /// The raw native handle. Internal — used by [RaftCollection].
+  ffi.Pointer<bindings.RaftDb> get nativeHandle =>
+      ffi.Pointer<bindings.RaftDb>.fromAddress(_address);
+
+  /// Run [f] with [name] as a temporary native UTF-8 string. Internal.
+  int withNativeCollectionName(
+    String name,
+    int Function(ffi.Pointer<ffi.Char> cName) f,
+  ) {
+    final cName = name.toNativeUtf8();
+    try {
+      return f(cName.cast());
+    } finally {
+      malloc.free(cName);
+    }
+  }
+
+  /// Open a typed collection — raft's flagship API. No code generation:
+  /// supply [encode] / [decode] closures over [RaftDocWriter] /
+  /// [RaftDocReader] and [id] to extract the primary key. See
+  /// [RaftCollection] for the full surface and an example.
+  RaftCollection<T> collection<T>({
+    required String name,
+    required int Function(T value) id,
+    required void Function(T value, RaftDocWriter w) encode,
+    required T Function(RaftDocReader r) decode,
+  }) {
+    _assertOpen();
+    final coll = RaftCollection<T>.internal(
+      db: this,
+      name: name,
+      id: id,
+      encode: encode,
+      decode: decode,
+      bindings: _syncBindings,
+      dbHandle: nativeHandle,
+    );
+    _collections.add(coll);
+    return coll;
+  }
+
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
@@ -121,6 +173,11 @@ class RaftDb {
   Future<void> close() async {
     _assertOpen();
     _closed = true;
+    // Collection handles must be released before the database handle.
+    for (final coll in _collections) {
+      coll.close();
+    }
+    _collections.clear();
     final address = _address;
     return Isolate.run(() {
       final db = bindings.RaftDbBindings(_openLib());
@@ -252,24 +309,6 @@ class RaftDb {
   }
 
   // ---------------------------------------------------------------------------
-
-  /// Create a typed [RaftCollection] backed by this database.
-  ///
-  /// Convenience factory equivalent to constructing a [RaftCollection]
-  /// directly. See [RaftCollection] for the full API and a usage example.
-  RaftCollection<T> collection<T>({
-    required String name,
-    required Uint8List Function(T document) serialize,
-    required T Function(Uint8List bytes) deserialize,
-  }) {
-    _assertOpen();
-    return RaftCollection<T>(
-      db: this,
-      name: name,
-      serialize: serialize,
-      deserialize: deserialize,
-    );
-  }
 
   // ---------------------------------------------------------------------------
   // Typed-FFI surface (collections, queries, transactions)

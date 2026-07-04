@@ -1,4 +1,5 @@
 export 'src/raft_collection.dart' show RaftCollection;
+export 'src/raft_doc.dart' show RaftDocReader, RaftDocWriter;
 export 'src/raft_db.dart' show RaftDb, RaftDbException;
 export 'src/raft_events.dart'
     show MutationEvent, MutationKind, MutationOrigin, QueryDiff;

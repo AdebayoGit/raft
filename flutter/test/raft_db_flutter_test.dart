@@ -1,14 +1,14 @@
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:raft_db_flutter/raft_db_flutter.dart';
+import 'package:raft_db_flutter/src/raft_doc.dart';
 
 void main() {
   // RaftDb.open requires a real compiled native library, so runtime
   // integration tests live in integration_test/. These unit tests cover
   // the pure-Dart surface: exception formatting, error code mapping,
-  // and RaftCollection key scoping logic.
+  // and the RaftDoc binary codec.
 
   group('RaftDbException', () {
     test('formats message without code', () {
@@ -115,42 +115,86 @@ void main() {
     });
   });
 
-  group('RaftCollection key scoping (pure-Dart)', () {
-    test('scoped key has the form <name>:<id>', () {
-      final scoped = utf8.encode('users:42');
-      expect(utf8.decode(scoped), 'users:42');
+  group('RaftDoc binary codec (pure-Dart)', () {
+    test('writer/reader round-trips every field type', () {
+      final bytes = RaftWire.encodeDoc(42, (w) {
+        w
+          ..string('name', 'Alice ✓ ünïcode')
+          ..integer('age', -7)
+          ..float('ratio', 0.25)
+          ..boolean('active', true)
+          ..bytes('blob', Uint8List.fromList([1, 2, 3]))
+          ..nullField('gone');
+      });
+      final r = RaftWire.decodeDoc(
+        bytes,
+        ByteData.view(bytes.buffer),
+        0,
+        bytes.length,
+      );
+      expect(r.id, 42);
+      expect(r.string('name'), 'Alice ✓ ünïcode');
+      expect(r.integer('age'), -7);
+      expect(r.float('ratio'), 0.25);
+      expect(r.boolean('active'), isTrue);
+      expect(r.bytes('blob'), [1, 2, 3]);
+      expect(r.has('gone'), isTrue);
+      expect(r.stringOrNull('gone'), isNull);
     });
 
-    test('different collection names produce distinct scoped keys', () {
-      final users = utf8.encode('users:1');
-      final orders = utf8.encode('orders:1');
-      expect(users, isNot(orders));
+    test('batch round-trips and preserves order', () {
+      final batch = RaftWire.encodeBatch(
+        3,
+        (i, w) => w..integer('n', i * 10),
+        (i) => i + 1,
+      );
+      final docs = RaftWire.decodeBatch(batch);
+      expect(docs.map((d) => d.id), [1, 2, 3]);
+      expect(docs.map((d) => d.integer('n')), [0, 10, 20]);
     });
 
-    test('non-ascii ids round-trip through utf-8', () {
-      // Real-world keys: emoji, accents, CJK.
-      const id = 'ユーザー🚀café';
-      final scoped = 'users:$id';
-      final bytes = utf8.encode(scoped);
-      expect(utf8.decode(bytes), scoped);
+    test('missing field throws a descriptive StateError, not silent zero', () {
+      final bytes = RaftWire.encodeDoc(1, (w) => w.string('present', 'x'));
+      final r = RaftWire.decodeDoc(
+        bytes,
+        ByteData.view(bytes.buffer),
+        0,
+        bytes.length,
+      );
+      expect(
+        () => r.string('absnt'),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains('absnt'),
+          ),
+        ),
+      );
     });
 
-    test('serializer / deserializer round-trip via JSON', () {
-      Uint8List serialize(Map<String, dynamic> doc) =>
-          Uint8List.fromList(utf8.encode(jsonEncode(doc)));
-      Map<String, dynamic> deserialize(Uint8List bytes) =>
-          jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
-
-      final original = {'id': '1', 'name': 'Alice', 'age': 30};
-      final restored = deserialize(serialize(original));
-      expect(restored, original);
+    test('wrong field type throws with both types named', () {
+      final bytes = RaftWire.encodeDoc(1, (w) => w.integer('n', 5));
+      final r = RaftWire.decodeDoc(
+        bytes,
+        ByteData.view(bytes.buffer),
+        0,
+        bytes.length,
+      );
+      expect(() => r.string('n'), throwsA(isA<StateError>()));
     });
 
-    test('empty id is encodable', () {
-      // Edge case: empty id under a non-empty collection should still
-      // produce a valid scoped key.
-      final scoped = utf8.encode('users:');
-      expect(scoped.length, 'users:'.length);
+    test('truncated document is rejected', () {
+      final bytes = RaftWire.encodeDoc(1, (w) => w.string('s', 'hello'));
+      expect(
+        () => RaftWire.decodeDoc(
+          bytes,
+          ByteData.view(bytes.buffer),
+          0,
+          bytes.length - 1,
+        ),
+        throwsA(isA<FormatException>()),
+      );
     });
   });
 }

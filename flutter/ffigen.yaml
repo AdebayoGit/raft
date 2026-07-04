@@ -20,6 +20,19 @@ functions:
     - 'rft_delete'
     # Typed collections
     - 'rft_collection_put'
+    # Batch / scan / prepared-handle hot paths (binary codec)
+    - 'rft_collection_put_many'
+    - 'rft_collection_delete_many'
+    - 'rft_collection_scan'
+    - 'rft_collection_get_buf'
+    - 'rft_collection_open'
+    - 'rft_collection_close'
+    - 'rft_coll_get_buf'
+    - 'rft_coll_get_many'
+    - 'rft_coll_generation'
+    - 'rft_buf_data'
+    - 'rft_buf_len'
+    - 'rft_buf_free'
     - 'rft_collection_put_auto'
     - 'rft_collection_get'
     - 'rft_collection_delete'
@@ -51,6 +64,8 @@ structs:
     - 'RaftDb'
     - 'RaftQueryResult'
     - 'RaftTransaction'
+    - 'RaftCollection'
+    - 'RftBuf'
 
 enums:
   include:
