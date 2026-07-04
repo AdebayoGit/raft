@@ -651,15 +651,22 @@ mod tests {
         let runner = Arc::new(MockRunner::new(vec![user(1, "Alice", true)]));
         // No sort / limit / offset → eligible for incremental evaluation.
         let query = Query::collection("users").filter(Filter::eq("active", Value::Bool(true)));
-        let mut lq = LiveQuery::new(query, runner.clone(), &bus);
 
-        // Insert, update, then delete — each should be a single-doc fetch,
-        // never a full query re-execution. Each mutation is published and
-        // its diff awaited BEFORE the next state change: the broadcast bus
-        // buffers the event, and awaiting the diff guarantees the live
-        // query observed the runner state that produced it (a spawned-task
-        // version of this test raced the runner mutations against the
-        // consumer under slow sanitizer runtimes).
+        // Capture the initial snapshot ([Alice]) explicitly, BEFORE any
+        // mutation, and hand it to the live query. This makes the whole
+        // test deterministic without a spawned producer: `previous` is
+        // pinned to the pre-mutation state, so each event below yields a
+        // real diff rather than an empty one. (The lazy-bootstrap path in
+        // `next_diff` would otherwise capture the snapshot only on the
+        // first poll — after the runner had already been mutated — turning
+        // the insert into an empty diff that blocks the consumer forever.)
+        let receiver = bus.subscribe();
+        let initial = runner.execute(&query);
+        let mut lq = LiveQuery::from_receiver(query, runner.clone(), receiver, initial);
+
+        // Insert, update, then delete — each a single-doc fetch, never a
+        // full query re-execution. Publish each mutation and await its diff
+        // before the next state change (the broadcast bus buffers events).
         runner.set_docs(vec![user(1, "Alice", true), user(2, "Bob", true)]);
         bus.publish(MutationEvent::insert("users", DocId(2)));
         let insert_diff = lq.next_diff().await.unwrap();
