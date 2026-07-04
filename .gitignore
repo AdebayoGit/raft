@@ -9,3 +9,6 @@ android/.cxx/
 
 # SwiftPM build outputs
 swift/.build/
+.vscode/
+.ruff_cache/
+*.iml

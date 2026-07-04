@@ -38,6 +38,17 @@ rm -rf ../rn/ios/RaftDB.xcframework
 cp -r ../flutter/ios/RaftDB.xcframework ../swift/
 cp -r ../flutter/ios/RaftDB.xcframework ../rn/ios/
 
+echo "==> Building macOS (universal)..."
+cargo build --release --target x86_64-apple-darwin --features ffi
+cargo build --release --target aarch64-apple-darwin --features ffi
+
+mkdir -p ../flutter/macos/Libs
+lipo -create \
+  target/x86_64-apple-darwin/release/libraftdb.dylib \
+  target/aarch64-apple-darwin/release/libraftdb.dylib \
+  -output ../flutter/macos/Libs/libraftdb.dylib
+install_name_tool -id @rpath/libraftdb.dylib ../flutter/macos/Libs/libraftdb.dylib
+
 echo "==> Generating C header..."
 cbindgen --config cbindgen.toml --crate raft-db --output include/raft.h
 
@@ -48,4 +59,5 @@ echo "    android/src/main/jniLibs/"
 echo "    swift/RaftDB.xcframework"
 echo "    rn/android/src/main/jniLibs/"
 echo "    rn/ios/RaftDB.xcframework"
+echo "    flutter/macos/Libs/libraftdb.dylib"
 echo "    core/include/raft.h"

@@ -6,7 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-Nothing yet. The next entry will start v0.2.0 work — sync protocol and reference server.
+### Added
+
+#### Core (`raft-db`)
+- Batch/scan C ABI with a compact binary document codec: `rft_collection_put_many` / `rft_collection_delete_many` (one transaction, one WAL write, one fsync per batch), `rft_collection_scan` + `RftBuf` owned-buffer handles, and single-lookup `rft_collection_get_buf`. No new dependencies; strict bounds-checked decoding.
+- Prepared collection handles: `rft_collection_open` / `rft_collection_close`, `rft_coll_get_buf` (zero-allocation point reads via thread-local scratch), and `rft_coll_get_many` (N reads, one crossing, one lock hold).
+- Shared-memory generation counters: `rft_coll_generation` returns a stable pointer to a per-collection mutation counter bumped by every write path, letting bindings validate read caches with a plain memory load — no FFI crossing. Guarded by a mutation-path coverage test.
+- Binary internal persistence behind a `0x00` magic byte — legacy JSON stores load unchanged; new writes skip per-document `serde_json` entirely.
+- Dedicated batch write/delete paths (`Database::put_batch_encoded`, `delete_batch`) bypassing optimistic-CC bookkeeping that batches cannot need; caller bytes persist verbatim (decode once, never re-encode).
+- Zero-clone read APIs: `for_each_doc`, `with_doc`, `get_many_visit`.
+
+#### Flutter (`raft_db`)
+- Typed collections with **zero code generation**: `db.collection<T>(name:, id:, encode:, decode:)` over `RaftDocWriter`/`RaftDocReader` closures. Synchronous hot paths: ~1 µs point reads, `getCached` with zero-FFI generation-checked invalidation, `getMany`/`putAll`/`deleteAll` batching one crossing and one durable commit, `all()` one-pass scans, `watch()` mutation streams.
+- macOS support: plugin pod bundling a prebuilt universal (x86_64 + arm64) dylib — `flutter run -d macos` works with no extra build steps; `build-mobile.sh` now produces the artifact.
+
+#### Benchmarks
+- Cross-database Flutter benchmark suite comparing raft against SQLite (sqflite), Hive, Isar, ObjectBox and Realm through their real Dart APIs: `bench/` (headless CLI), `bench_native/` (all-engine Dart-VM runner), `bench_app/` (on-device Flutter app). Workloads include durable and 4-writer concurrent durable commits, cached reads, batch reads, and frame-budget reporting (reads per frame at 120/165/240 Hz); reports lead with plain-language decision metrics.
+
+### Changed
+- The Flutter binding's typed-collection surface replaces the legacy string-keyed KV wrapper; raw byte KV access remains on `RaftDb`.
+
+### Known gaps
+- The Kotlin, Swift, and React Native bindings do not yet expose the new batch/handle/generation C ABI (Flutter binding only); tracked in WORK_REMAINING.md.
 
 ## [0.1.0] — Unreleased
 
@@ -28,12 +49,12 @@ The first cut of Raft. Storage engine, document layer, queries, transactions, an
   - Queries: `rft_query_execute / result_count / result_get / result_free`.
   - Transactions: `rft_transaction_begin / get / put / delete / commit / rollback`.
   - Observers: `rft_observe`, `rft_observe_query`, `rft_unobserve`. Both deliver C callbacks with JSON-encoded events; `rft_observe_query` fires an initial-snapshot diff synchronously before the first event.
-- 9 typed error codes covering null pointers, UTF-8 validation, I/O failures, missing keys, buffer sizing, JSON parse, transaction conflicts, invalid handles, and unknown subscriptions.
+- 14 typed error codes covering null pointers, UTF-8 validation, I/O failures, missing keys, buffer sizing, JSON parse, transaction conflicts, invalid handles, and unknown subscriptions.
 
 #### Platform bindings
-- **Flutter (`raft_db`)** — `RaftDb.open` + put / get / delete / close on `Uint8List`, two-phase reads (size query → exact buffer). `RaftCollection<T>` with function-based serialize/deserialize and key prefixing under `<name>:<id>`. `RaftDbException.fromCode` covering all 9 error codes.
-- **Android (`com.raftdb`)** — `RaftDb` with suspend functions and `Flow`-based observer stubs. `RaftCollection<T>` with serialize/deserialize functions. `RaftError` sealed class with all 9 typed subclasses. JNI shim in `cpp-adapter.cpp` and `raft-jni.cpp` translating `Java_com_raft_HybridRaft_native*` symbols to `rft_*`.
-- **Swift (`RaftDB`)** — `async`/`await` API with `RaftCollection<T: Codable>` (custom encoders supported), `AsyncStream` observer stubs, `RaftError` enum with all 9 cases.
+- **Flutter (`raft_db`)** — `RaftDb.open` + put / get / delete / close on `Uint8List`, two-phase reads (size query → exact buffer). `RaftCollection<T>` with function-based serialize/deserialize and key prefixing under `<name>:<id>`. `RaftDbException.fromCode` covering all 14 error codes.
+- **Android (`com.raftdb`)** — `RaftDb` with suspend functions and `Flow`-based observer stubs. `RaftCollection<T>` with serialize/deserialize functions. `RaftError` sealed class with all 14 typed subclasses. JNI shim in `cpp-adapter.cpp` and `raft-jni.cpp` translating `Java_com_raft_HybridRaft_native*` symbols to `rft_*`.
+- **Swift (`RaftDB`)** — `async`/`await` API with `RaftCollection<T: Codable>` (custom encoders supported), `AsyncStream` observer stubs, `RaftError` enum with all 14 cases.
 - **React Native (`react-native-raft`)** — Nitro-based hybrid object exposing open / put / get / delete / close / watch / unwatch with Promise APIs. Watch fires the callback with a current snapshot and on every matching write.
 
 #### Documentation
