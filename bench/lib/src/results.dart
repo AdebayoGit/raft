@@ -322,6 +322,71 @@ class BenchReport {
         '${config.readSamples} read (median)</span>');
     b.writeln('</div></header>');
 
+    // Decision metrics: raft vs the best durable rival, plain verdicts.
+    // Engines whose durability note marks them as buffered are excluded
+    // from the rival pool — beating a cache at being a cache proves
+    // nothing a buyer cares about.
+    final raftEng = engines.firstWhereOrNull((e) => e.engine == 'raft-db');
+    if (raftEng != null) {
+      double? rivalBest(Workload w) {
+        double? best;
+        for (final e in engines) {
+          if (e.engine == 'raft-db') continue;
+          final note = e.durabilityNote.toLowerCase();
+          if (note.contains('buffered') || note.contains('not crash-durable')) {
+            continue;
+          }
+          final v = e.forWorkload(w)?.opsPerSec;
+          if (v != null && (best == null || v > best)) best = v;
+        }
+        return best;
+      }
+
+      String chip(double? raft, double? rival) {
+        if (raft == null) return '<span class="mut">n/a</span>';
+        if (rival == null || rival == 0) {
+          return '<span style="color:#10b981;font-weight:700">only raft</span>';
+        }
+        final ratio = raft / rival;
+        if (ratio >= 1.1) {
+          return '<span style="color:#10b981;font-weight:700">won '
+              '${ratio >= 10 ? "${ratio.round()}×" : "${ratio.toStringAsFixed(1)}×"}</span>';
+        }
+        if (ratio >= 0.9) {
+          return '<span style="color:#f59e0b;font-weight:700">tied</span>';
+        }
+        return '<span style="color:#ef4444;font-weight:700">behind '
+            '${ratio.toStringAsFixed(2)}×</span>';
+      }
+
+      b.writeln('<section class="card"><h2>The metrics that matter</h2>');
+      b.writeln('<p class="sub">raft vs the best <b>durable</b> engine in '
+          'this run. Buffered stores are excluded from verdicts — read the '
+          'durability table below.</p>');
+      b.writeln('<table><thead><tr><th>Question</th><th>raft-db</th>'
+          '<th>Best durable rival</th><th>Verdict</th></tr></thead><tbody>');
+      final rows = <(String, Workload, Workload?)>[
+        ('Durable commits (data survives crash)', Workload.durableWrites, null),
+        ('Writes under concurrency (real apps)', Workload.concurrentDurable, null),
+        ('Frame-loop reads (cached)', Workload.pointReadCached, Workload.pointRead),
+        ('By-key reads (uncached)', Workload.pointRead, null),
+        ('List hydration (batch read)', Workload.readMany, null),
+        ('Full scan', Workload.iterateAll, null),
+        ('Bulk insert', Workload.bulkWrite, null),
+        ('Bulk update', Workload.bulkUpdate, null),
+        ('Bulk delete', Workload.bulkDelete, null),
+      ];
+      for (final (label, w, rivalW) in rows) {
+        final raftV = raftEng.forWorkload(w)?.opsPerSec;
+        final rivalV = rivalBest(rivalW ?? w);
+        b.writeln('<tr><td>$label</td>'
+            '<td>${raftV != null ? "${_fmtNum(raftV)} op/s" : "—"}</td>'
+            '<td class="mut">${rivalV != null ? "${_fmtNum(rivalV)} op/s" : "—"}</td>'
+            '<td>${chip(raftV, rivalV)}</td></tr>');
+      }
+      b.writeln('</tbody></table></section>');
+    }
+
     // Plain-language headline numbers.
     b.writeln('<section class="card"><h2>At a glance</h2>');
     b.writeln('<p class="sub">One number per everyday operation '
