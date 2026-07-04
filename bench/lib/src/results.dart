@@ -185,6 +185,24 @@ class BenchReport {
       '(median reported)\n',
     );
 
+    b.writeln('## At a glance — plain-language throughput\n');
+    b.writeln(
+      'One number per everyday operation (median run, higher is better).\n',
+    );
+    b.writeln('| Engine | Reads /sec | Writes /sec | Updates /sec | Deletes /sec |');
+    b.writeln('|---|---|---|---|---|');
+    for (final e in engines) {
+      String cell(Workload w) {
+        final r = e.forWorkload(w);
+        return r?.opsPerSec != null ? _fmtNum(r!.opsPerSec!) : '—';
+      }
+
+      b.writeln('| ${e.engine} | ${cell(Workload.pointRead)} | '
+          '${cell(Workload.bulkWrite)} | ${cell(Workload.bulkUpdate)} | '
+          '${cell(Workload.bulkDelete)} |');
+    }
+    b.writeln();
+
     b.writeln('## Engines & durability\n');
     b.writeln('| Engine | Version | Write durability (as benchmarked) |');
     b.writeln('|---|---|---|');
@@ -282,6 +300,33 @@ class BenchReport {
     b.writeln('<span><b>Samples</b> ${config.writeSamples} write / '
         '${config.readSamples} read (median)</span>');
     b.writeln('</div></header>');
+
+    // Plain-language headline numbers.
+    b.writeln('<section class="card"><h2>At a glance</h2>');
+    b.writeln('<p class="sub">One number per everyday operation '
+        '(median run, higher is better).</p>');
+    b.writeln('<table><thead><tr><th>Engine</th><th>Reads /sec</th>'
+        '<th>Writes /sec</th><th>Updates /sec</th><th>Deletes /sec</th>'
+        '</tr></thead><tbody>');
+    for (final e in engines) {
+      String cell(Workload w) {
+        final r = e.forWorkload(w);
+        return r?.opsPerSec != null ? _fmtNum(r!.opsPerSec!) : '—';
+      }
+
+      final c = colors[e.engine]!;
+      b.writeln('<tr><td><span class="dot" style="background:$c"></span>'
+          '<b>${_esc(e.engine)}</b></td>'
+          '<td>${cell(Workload.pointRead)}</td>'
+          '<td>${cell(Workload.bulkWrite)}</td>'
+          '<td>${cell(Workload.bulkUpdate)}</td>'
+          '<td>${cell(Workload.bulkDelete)}</td></tr>');
+    }
+    b.writeln('</tbody></table>');
+    b.writeln('<p class="sub" style="margin-top:10px">Reads = fetch by key · '
+        'Writes = insert new records (one transaction) · Updates/Deletes = '
+        'change/remove existing records (one transaction). Durable-commit '
+        'behaviour is covered separately below.</p></section>');
 
     // Legend + durability.
     b.writeln('<section class="card"><h2>Engines &amp; write durability</h2>');

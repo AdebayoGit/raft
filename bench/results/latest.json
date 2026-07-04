@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-07-04T00:20:21.461283Z",
+  "timestamp": "2026-07-04T00:49:54.391141Z",
   "platform": "macos Version 26.5.1 (Build 25F80) (3.8.1)",
   "config": {
     "recordCount": 10000,
@@ -21,95 +21,95 @@
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            80409,
-            71861,
-            60031
+            67320,
+            61321,
+            55294
           ],
-          "medianMicros": 71861,
-          "bestMicros": 60031,
-          "opsPerSec": 139157.54025131854
+          "medianMicros": 61321,
+          "bestMicros": 55294,
+          "opsPerSec": 163076.27077183998
         },
         {
           "workload": "bulk_update",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            73325,
-            73108,
-            74012
+            61450,
+            57979,
+            60468
           ],
-          "medianMicros": 73325,
-          "bestMicros": 73108,
-          "opsPerSec": 136379.13399249915
+          "medianMicros": 60468,
+          "bestMicros": 57979,
+          "opsPerSec": 165376.72818680955
         },
         {
           "workload": "bulk_delete",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            51082,
-            52818,
-            52715
+            43203,
+            41385,
+            38305
           ],
-          "medianMicros": 52715,
-          "bestMicros": 51082,
-          "opsPerSec": 189699.3265673907
+          "medianMicros": 41385,
+          "bestMicros": 38305,
+          "opsPerSec": 241633.44206838228
         },
         {
           "workload": "durable_writes",
           "status": "ok",
           "opCount": 500,
           "samplesMicros": [
-            9904565,
-            9732934,
-            9705197
+            9696209,
+            9688892,
+            9710541
           ],
-          "medianMicros": 9732934,
-          "bestMicros": 9705197,
-          "opsPerSec": 51.37197067194743
+          "medianMicros": 9696209,
+          "bestMicros": 9688892,
+          "opsPerSec": 51.56654523432818
         },
         {
           "workload": "concurrent_durable",
           "status": "ok",
           "opCount": 500,
           "samplesMicros": [
-            4892458,
-            4763554,
-            4758697
+            4939961,
+            4853423,
+            4786474
           ],
-          "medianMicros": 4763554,
-          "bestMicros": 4758697,
-          "opsPerSec": 104.96364689053593
+          "medianMicros": 4853423,
+          "bestMicros": 4786474,
+          "opsPerSec": 103.02007469779575
         },
         {
           "workload": "point_read",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            16438,
-            14401,
-            15750,
-            14148,
-            12319
+            16145,
+            13473,
+            15127,
+            12784,
+            10318
           ],
-          "medianMicros": 14401,
-          "bestMicros": 12319,
-          "opsPerSec": 694396.2224845496
+          "medianMicros": 13473,
+          "bestMicros": 10318,
+          "opsPerSec": 742225.1911229867
         },
         {
           "workload": "iterate_all",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            3129,
-            2511,
-            2635,
-            2433,
-            2512
+            2487,
+            2078,
+            2323,
+            1916,
+            1884
           ],
-          "medianMicros": 2512,
-          "bestMicros": 2433,
-          "opsPerSec": 3980891.719745223
+          "medianMicros": 2078,
+          "bestMicros": 1884,
+          "opsPerSec": 4812319.538017324
         }
       ]
     },
@@ -123,95 +123,95 @@
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            189254,
-            101393,
-            110692
+            170330,
+            93661,
+            100761
           ],
-          "medianMicros": 110692,
-          "bestMicros": 101393,
-          "opsPerSec": 90340.76536696419
+          "medianMicros": 100761,
+          "bestMicros": 93661,
+          "opsPerSec": 99244.74747174006
         },
         {
           "workload": "bulk_update",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            103704,
-            74795,
-            76798
+            96962,
+            87743,
+            80853
           ],
-          "medianMicros": 76798,
-          "bestMicros": 74795,
-          "opsPerSec": 130211.7242636527
+          "medianMicros": 87743,
+          "bestMicros": 80853,
+          "opsPerSec": 113969.20552066831
         },
         {
           "workload": "bulk_delete",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            86026,
-            63024,
-            55409
+            82782,
+            53132,
+            54788
           ],
-          "medianMicros": 63024,
-          "bestMicros": 55409,
-          "opsPerSec": 158669.71312515868
+          "medianMicros": 54788,
+          "bestMicros": 53132,
+          "opsPerSec": 182521.72008469008
         },
         {
           "workload": "durable_writes",
           "status": "ok",
           "opCount": 500,
           "samplesMicros": [
-            337484,
-            350009,
-            336061
+            336043,
+            329692,
+            327333
           ],
-          "medianMicros": 337484,
-          "bestMicros": 336061,
-          "opsPerSec": 1481.551718007372
+          "medianMicros": 329692,
+          "bestMicros": 327333,
+          "opsPerSec": 1516.5669776640016
         },
         {
           "workload": "concurrent_durable",
           "status": "ok",
           "opCount": 500,
           "samplesMicros": [
-            338386,
-            330161,
-            325784
+            319213,
+            326046,
+            322459
           ],
-          "medianMicros": 330161,
-          "bestMicros": 325784,
-          "opsPerSec": 1514.4126653360029
+          "medianMicros": 322459,
+          "bestMicros": 319213,
+          "opsPerSec": 1550.584725499986
         },
         {
           "workload": "point_read",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            702303,
-            671700,
-            751861,
-            702804,
-            692531
+            666369,
+            639883,
+            648506,
+            631322,
+            632667
           ],
-          "medianMicros": 702303,
-          "bestMicros": 671700,
-          "opsPerSec": 14238.868408649827
+          "medianMicros": 639883,
+          "bestMicros": 631322,
+          "opsPerSec": 15627.85696760189
         },
         {
           "workload": "iterate_all",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            7647,
-            6789,
-            10146,
-            7927,
-            8464
+            8190,
+            6854,
+            6928,
+            9933,
+            8851
           ],
-          "medianMicros": 7927,
-          "bestMicros": 6789,
-          "opsPerSec": 1261511.2905260501
+          "medianMicros": 8190,
+          "bestMicros": 6854,
+          "opsPerSec": 1221001.221001221
         }
       ]
     },
@@ -225,95 +225,95 @@
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            76282,
-            39547,
-            35653
+            71453,
+            44248,
+            35489
           ],
-          "medianMicros": 39547,
-          "bestMicros": 35653,
-          "opsPerSec": 252863.68118947075
+          "medianMicros": 44248,
+          "bestMicros": 35489,
+          "opsPerSec": 225998.915205207
         },
         {
           "workload": "bulk_update",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            78982,
-            60166,
-            45343
+            74797,
+            47716,
+            38250
           ],
-          "medianMicros": 60166,
-          "bestMicros": 45343,
-          "opsPerSec": 166206.82777648506
+          "medianMicros": 47716,
+          "bestMicros": 38250,
+          "opsPerSec": 209573.30874339843
         },
         {
           "workload": "bulk_delete",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            13736,
-            8455,
-            8342
+            13172,
+            8383,
+            7125
           ],
-          "medianMicros": 8455,
-          "bestMicros": 8342,
-          "opsPerSec": 1182732.1111768184
+          "medianMicros": 8383,
+          "bestMicros": 7125,
+          "opsPerSec": 1192890.3733746868
         },
         {
           "workload": "durable_writes",
           "status": "ok",
           "opCount": 500,
           "samplesMicros": [
-            88617,
-            84960,
-            82888
+            83341,
+            82319,
+            80695
           ],
-          "medianMicros": 84960,
-          "bestMicros": 82888,
-          "opsPerSec": 5885.12241054614
+          "medianMicros": 82319,
+          "bestMicros": 80695,
+          "opsPerSec": 6073.931899075547
         },
         {
           "workload": "concurrent_durable",
           "status": "ok",
           "opCount": 500,
           "samplesMicros": [
-            45648,
-            48826,
-            41327
+            44672,
+            43374,
+            42137
           ],
-          "medianMicros": 45648,
-          "bestMicros": 41327,
-          "opsPerSec": 10953.382404486505
+          "medianMicros": 43374,
+          "bestMicros": 42137,
+          "opsPerSec": 11527.643288606077
         },
         {
           "workload": "point_read",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            4797,
-            3751,
-            3569,
-            3383,
-            3418
+            3824,
+            3118,
+            3142,
+            2947,
+            3169
           ],
-          "medianMicros": 3569,
-          "bestMicros": 3383,
-          "opsPerSec": 2801905.2956010085
+          "medianMicros": 3142,
+          "bestMicros": 2947,
+          "opsPerSec": 3182686.187141948
         },
         {
           "workload": "iterate_all",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            857,
-            586,
-            288,
-            186,
-            179
+            1204,
+            600,
+            144,
+            136,
+            135
           ],
-          "medianMicros": 288,
-          "bestMicros": 179,
-          "opsPerSec": 34722222.222222224
+          "medianMicros": 144,
+          "bestMicros": 135,
+          "opsPerSec": 69444444.44444445
         }
       ]
     },
@@ -327,95 +327,95 @@
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            72363,
-            48031,
-            42713
+            67424,
+            41121,
+            40498
           ],
-          "medianMicros": 48031,
-          "bestMicros": 42713,
-          "opsPerSec": 208198.87156211614
+          "medianMicros": 41121,
+          "bestMicros": 40498,
+          "opsPerSec": 243184.74745263977
         },
         {
           "workload": "bulk_update",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            42473,
-            43998,
-            40048
+            46024,
+            43350,
+            45504
           ],
-          "medianMicros": 42473,
-          "bestMicros": 40048,
-          "opsPerSec": 235443.69364066585
+          "medianMicros": 45504,
+          "bestMicros": 43350,
+          "opsPerSec": 219760.90014064696
         },
         {
           "workload": "bulk_delete",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            33146,
-            31685,
-            31173
+            32756,
+            33035,
+            31600
           ],
-          "medianMicros": 31685,
-          "bestMicros": 31173,
-          "opsPerSec": 315606.7539845353
+          "medianMicros": 32756,
+          "bestMicros": 31600,
+          "opsPerSec": 305287.5809012089
         },
         {
           "workload": "durable_writes",
           "status": "ok",
           "opCount": 500,
           "samplesMicros": [
-            10200680,
-            10222049,
-            10223832
+            10353756,
+            10340777,
+            10258828
           ],
-          "medianMicros": 10222049,
-          "bestMicros": 10200680,
-          "opsPerSec": 48.91387235572829
+          "medianMicros": 10340777,
+          "bestMicros": 10258828,
+          "opsPerSec": 48.352265985428375
         },
         {
           "workload": "concurrent_durable",
           "status": "ok",
           "opCount": 500,
           "samplesMicros": [
-            10634283,
-            10367217,
-            10365824
+            10495003,
+            10260818,
+            10381840
           ],
-          "medianMicros": 10367217,
-          "bestMicros": 10365824,
-          "opsPerSec": 48.22895093254053
+          "medianMicros": 10381840,
+          "bestMicros": 10260818,
+          "opsPerSec": 48.161019626578714
         },
         {
           "workload": "point_read",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            521461,
-            507790,
-            518929,
-            555763,
-            520452
+            549774,
+            503251,
+            503278,
+            509627,
+            507929
           ],
-          "medianMicros": 520452,
-          "bestMicros": 507790,
-          "opsPerSec": 19214.067771859845
+          "medianMicros": 507929,
+          "bestMicros": 503251,
+          "opsPerSec": 19687.79101016087
         },
         {
           "workload": "iterate_all",
           "status": "ok",
           "opCount": 10000,
           "samplesMicros": [
-            3419,
-            2234,
-            2140,
-            2013,
-            3551
+            2959,
+            2052,
+            2009,
+            2445,
+            1978
           ],
-          "medianMicros": 2234,
-          "bestMicros": 2013,
-          "opsPerSec": 4476275.738585497
+          "medianMicros": 2052,
+          "bestMicros": 1978,
+          "opsPerSec": 4873294.346978557
         }
       ]
     },

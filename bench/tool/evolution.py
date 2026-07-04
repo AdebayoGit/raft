@@ -77,7 +77,27 @@ def main():
     reports = [json.loads(p.read_text()) for p in paths]
     baseline, _, current = reports
 
-    sections = []
+    # Plain-language headline: one number per everyday operation.
+    GLANCE = [('Reads /sec', 'point_read'), ('Writes /sec', 'bulk_write'),
+              ('Updates /sec', 'bulk_update'), ('Deletes /sec', 'bulk_delete')]
+    glance_rows = []
+    engines = [('raft-db', '#ff5a3c')] + COMPETITORS
+    for name, color in engines:
+        cells = ''.join(f'<td>{fmt(ops(current, name, wl))}</td>' for _, wl in GLANCE)
+        glance_rows.append(
+            f'<tr><td><span class="dot" style="background:{color}"></span>'
+            f'<b>{name}</b></td>{cells}</tr>')
+    glance = (
+        '<section class="card"><h2>At a glance (current)</h2>'
+        '<p class="sub">One number per everyday operation — higher is better.</p>'
+        '<table style="width:100%;border-collapse:collapse;font-size:13.5px">'
+        '<thead><tr><th style="text-align:left;padding:6px 8px">Engine</th>'
+        + ''.join(f'<th style="text-align:left;padding:6px 8px">{h}</th>' for h, _ in GLANCE)
+        + '</tr></thead><tbody>'
+        + ''.join(glance_rows)
+        + '</tbody></table></section>')
+
+    sections = [glance]
     for wl, desc in WORKLOADS:
         entries = [
             (RAFT_LABELS[i], RAFT_COLORS[i], ops(rep, 'raft-db', wl), True)
@@ -112,7 +132,8 @@ def main():
 
     html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>raft-db optimization evolution</title><style>{CSS}</style></head><body><div class="wrap">
+<title>raft-db optimization evolution</title><style>{CSS}
+td{{padding:6px 8px;border-bottom:1px solid var(--line);}}</style></head><body><div class="wrap">
 <header><h1>raft-db — optimization evolution</h1>
 <p class="sub">Same machine, same honest workloads. Three raft snapshots
 (baseline → batch FFI + binary boundary codec → binary internal persistence,
