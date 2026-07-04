@@ -33,20 +33,54 @@ const TAG_FLOAT: u8 = 3;
 const TAG_STRING: u8 = 4;
 const TAG_BYTES: u8 = 5;
 
+/// Check a document against the wire-format limits, for write paths that
+/// must reject gracefully instead of hitting `encode_doc`'s panicking
+/// backstop.
+pub(crate) fn document_within_wire_limits(doc: &Document) -> bool {
+    doc.fields.len() <= MAX_DOC_FIELDS && doc.fields.keys().all(|k| k.len() <= MAX_FIELD_NAME_LEN)
+}
+
 /// Decode failure — mapped to `RftError::InvalidJson` at the FFI boundary
 /// (same class of error: malformed document payload).
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct CodecError;
 
+/// Maximum fields per document (the wire format's count is a `u16`).
+pub(crate) const MAX_DOC_FIELDS: usize = u16::MAX as usize;
+/// Maximum field-name length in bytes (the wire format's length is a `u8`).
+pub(crate) const MAX_FIELD_NAME_LEN: usize = u8::MAX as usize;
+
 /// Encode one document, appending to `out`.
+///
+/// # Panics
+///
+/// Panics if the document exceeds [`MAX_DOC_FIELDS`] or any field name
+/// exceeds [`MAX_FIELD_NAME_LEN`] — silent truncation here would corrupt
+/// the frame (count/offset mismatch) and make the document unreadable.
+/// Write paths reject such documents gracefully before reaching this
+/// encoder (see `document_within_wire_limits`); the panic is the backstop
+/// for internal misuse, converted to `InternalPanic` at the FFI boundary.
 pub(crate) fn encode_doc(doc: &Document, out: &mut Vec<u8>) {
+    assert!(
+        doc.fields.len() <= MAX_DOC_FIELDS,
+        "document {} has {} fields; the wire format caps at {}",
+        doc.id.0,
+        doc.fields.len(),
+        MAX_DOC_FIELDS
+    );
     out.extend_from_slice(&doc.id.0.to_le_bytes());
     out.extend_from_slice(&(doc.fields.len() as u16).to_le_bytes());
     for (name, value) in &doc.fields {
         let name_bytes = name.as_bytes();
-        debug_assert!(name_bytes.len() <= u8::MAX as usize);
-        out.push(name_bytes.len().min(u8::MAX as usize) as u8);
-        out.extend_from_slice(&name_bytes[..name_bytes.len().min(u8::MAX as usize)]);
+        assert!(
+            name_bytes.len() <= MAX_FIELD_NAME_LEN,
+            "field name {:?}… is {} bytes; the wire format caps names at {}",
+            &name[..name.len().min(32)],
+            name_bytes.len(),
+            MAX_FIELD_NAME_LEN
+        );
+        out.push(name_bytes.len() as u8);
+        out.extend_from_slice(name_bytes);
         match value {
             Value::Null => out.push(TAG_NULL),
             Value::Bool(b) => {

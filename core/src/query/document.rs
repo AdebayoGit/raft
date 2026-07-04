@@ -4,7 +4,6 @@
 //! [`DocumentStore`] trait abstracts the backing storage so the query
 //! engine can be tested without touching disk.
 
-
 use serde::{Deserialize, Serialize};
 
 use crate::index::DocId;

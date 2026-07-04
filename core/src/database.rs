@@ -270,13 +270,22 @@ impl DatabaseInner {
             return;
         }
 
-        let ops: Vec<BatchOp> = batch
+        let mut ops: Vec<BatchOp> = batch
             .iter()
             .map(|s| BatchOp::Put {
                 key: doc_key(&s.collection, s.doc.id),
                 value: s.payload.clone(),
             })
             .collect();
+        {
+            let mut batch_max: HashMap<String, u64> = HashMap::new();
+            for staged in &batch {
+                let e = batch_max.entry(staged.collection.clone()).or_insert(0);
+                *e = (*e).max(staged.doc.id.0);
+            }
+            let collections = self.read_collections();
+            append_watermark_ops(&collections, &batch_max, &mut ops);
+        }
         let io_result = engine.apply_batch(ops);
 
         #[cfg(feature = "async")]
@@ -507,19 +516,23 @@ impl Database {
     /// Allocate a fresh [`DocId`] for `collection` and insert `doc` under it.
     /// Returns the assigned id. The fields of `doc.id` is overwritten.
     pub fn put_auto(&self, collection: &str, mut doc: Document) -> Result<DocId, DatabaseError> {
-        let id = self.next_id(collection);
-        doc.id = id;
-        // Persist the high-water mark BEFORE the document write. If the
-        // highest-id documents are later deleted and their tombstones
-        // compacted away, a reopen would otherwise re-derive next_doc_id
-        // from the surviving max id and re-issue previously used ids.
-        {
+        // Issue the id and persist the high-water mark under ONE engine-lock
+        // scope. All writers serialise on the engine lock, so counters can
+        // never be persisted out of order (two racing put_autos could
+        // otherwise clobber a higher counter with a lower one, re-enabling
+        // id reuse after delete-then-compact-then-reopen). The counter goes
+        // to the WAL before the document; a crash between the two leaves an
+        // id gap, never a reuse.
+        let id = {
             let mut engine = self.inner.lock_engine();
+            let id = self.next_id(collection);
             engine.put(
                 id_counter_key(collection),
                 (id.0 + 1).to_be_bytes().to_vec(),
             )?;
-        }
+            id
+        };
+        doc.id = id;
         self.put(collection, doc)?;
         Ok(id)
     }
@@ -641,6 +654,13 @@ impl Database {
 
         {
             let mut engine = engine;
+            {
+                let mut batch_max: HashMap<String, u64> = HashMap::new();
+                let max_id = docs.iter().map(|d| d.id.0).max().unwrap_or(0);
+                batch_max.insert(collection.to_string(), max_id);
+                let collections = self.inner.read_collections();
+                append_watermark_ops(&collections, &batch_max, &mut ops);
+            }
             engine.apply_batch(ops)?;
 
             let mut collections = self.inner.write_collections();
@@ -1354,6 +1374,15 @@ impl DbTransaction {
                 key: doc_key(coll, *id),
             });
         }
+        {
+            let mut batch_max: HashMap<String, u64> = HashMap::new();
+            for ((coll, id), _) in &applied {
+                let e = batch_max.entry(coll.clone()).or_insert(0);
+                *e = (*e).max(id.0);
+            }
+            let collections = self.inner.read_collections();
+            append_watermark_ops(&collections, &batch_max, &mut ops);
+        }
         engine.apply_batch(ops)?;
 
         // Phase 3: apply to memory under a brief write lock, collecting
@@ -1528,7 +1557,28 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-#[allow(dead_code)] // Reserved for future on-open rehydration.
+/// Append one id-counter watermark op per collection touched by a batch.
+///
+/// MUST be called with the engine lock held: writers serialise on it, and
+/// `next_doc_id` reflects every previously applied write, so the computed
+/// watermark can never move backwards. Explicit-id writes would otherwise
+/// advance the watermark only in memory, letting `put_auto` re-issue those
+/// ids after a delete-then-compact-then-reopen (see the reopen tests).
+fn append_watermark_ops(
+    collections: &HashMap<String, CollectionState>,
+    batch_max: &HashMap<String, u64>,
+    ops: &mut Vec<BatchOp>,
+) {
+    for (coll, max_id) in batch_max {
+        let current = collections.get(coll.as_str()).map_or(1, |s| s.next_doc_id);
+        let watermark = current.max(max_id + 1);
+        ops.push(BatchOp::Put {
+            key: id_counter_key(coll),
+            value: watermark.to_be_bytes().to_vec(),
+        });
+    }
+}
+
 fn id_counter_key(collection: &str) -> Vec<u8> {
     let mut k = Vec::with_capacity(META_PREFIX.len() + collection.len() + ID_COUNTER_SUFFIX.len());
     k.extend_from_slice(META_PREFIX);
@@ -1544,6 +1594,14 @@ fn id_counter_key(collection: &str) -> Vec<u8> {
 const DOC_BINARY_MAGIC: u8 = 0x00;
 
 fn serialize_doc(doc: &Document) -> Result<Vec<u8>, DatabaseError> {
+    if !crate::codec::document_within_wire_limits(doc) {
+        return Err(DatabaseError::Decode(format!(
+            "document {} exceeds wire limits ({} fields max, {}-byte names max)",
+            doc.id.0,
+            crate::codec::MAX_DOC_FIELDS,
+            crate::codec::MAX_FIELD_NAME_LEN
+        )));
+    }
     let mut out = Vec::with_capacity(64);
     out.push(DOC_BINARY_MAGIC);
     crate::codec::encode_doc(doc, &mut out);
@@ -1674,6 +1732,108 @@ mod tests {
             c.0
         );
         assert!(a.0 < d.0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn concurrent_put_autos_never_regress_the_persisted_watermark() {
+        use std::sync::Arc;
+        let dir = temp_dir("auto_id_concurrent");
+        let db = Arc::new(Database::open(&dir).unwrap());
+
+        // Hammer put_auto from several threads; the persisted counter must
+        // end at max(issued)+1 — a lower racing writer clobbering a higher
+        // one was the id-reuse bug this guards against.
+        let mut handles = Vec::new();
+        for t in 0..4 {
+            let db = Arc::clone(&db);
+            handles.push(std::thread::spawn(move || {
+                let mut ids = Vec::new();
+                for i in 0..25 {
+                    let id = db
+                        .put_auto("users", user(0, "x", (t * 100 + i) as i64))
+                        .unwrap();
+                    ids.push(id.0);
+                }
+                ids
+            }));
+        }
+        let mut all: Vec<u64> = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), 100, "ids must be unique across threads");
+        let max_issued = *all.last().unwrap();
+
+        // Reopen after deleting everything: watermark must survive.
+        let ids: Vec<DocId> = all.iter().map(|&i| DocId(i)).collect();
+        db.delete_batch("users", &ids).unwrap();
+        drop(db);
+        let db = Database::open(&dir).unwrap();
+        let next = db.put_auto("users", user(0, "y", 1)).unwrap();
+        assert!(
+            next.0 > max_issued,
+            "id {} reissued (max previously issued {})",
+            next.0,
+            max_issued
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explicit_id_writes_advance_the_persisted_watermark() {
+        let dir = temp_dir("explicit_id_watermark");
+        {
+            let db = Database::open(&dir).unwrap();
+            // Explicit high ids through the batch path (put_many's engine).
+            let docs: Vec<(Document, Vec<u8>)> = (100..=110)
+                .map(|i| {
+                    let d = user(i, "imported", i as i64);
+                    let mut raw = Vec::new();
+                    crate::codec::encode_doc(&d, &mut raw);
+                    (d, raw)
+                })
+                .collect();
+            let entries: Vec<(Document, &[u8])> = docs
+                .iter()
+                .map(|(d, r)| (d.clone(), r.as_slice()))
+                .collect();
+            db.put_batch_encoded("users", entries).unwrap();
+            // Delete them all so only the persisted watermark remembers 110.
+            let ids: Vec<DocId> = (100..=110).map(DocId).collect();
+            db.delete_batch("users", &ids).unwrap();
+        }
+        let db = Database::open(&dir).unwrap();
+        let id = db.put_auto("users", user(0, "later", 1)).unwrap();
+        assert!(
+            id.0 > 110,
+            "auto id {} reused an id previously written with an explicit id",
+            id.0
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn oversized_documents_are_rejected_gracefully() {
+        let dir = temp_dir("wire_limits");
+        let db = Database::open(&dir).unwrap();
+
+        // 256-byte field name: rejected by serialize_doc, not a panic.
+        let long_name = "n".repeat(256);
+        let doc = Document::new(DocId(1)).with_field(long_name, Value::Int(1));
+        assert!(matches!(
+            db.put("users", doc),
+            Err(DatabaseError::Decode(_))
+        ));
+
+        // Exactly at the cap: accepted.
+        let ok_name = "n".repeat(255);
+        let doc = Document::new(DocId(2)).with_field(ok_name.clone(), Value::Int(2));
+        db.put("users", doc).unwrap();
+        assert!(db.get("users", DocId(2)).unwrap().get(&ok_name).is_some());
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

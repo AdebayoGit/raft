@@ -219,6 +219,11 @@ class RaftCollection<T> {
   /// memory load — **no FFI crossing** — making it safe to call in the
   /// frame loop at any refresh rate. Any write to the collection (from
   /// any isolate) invalidates the cache; the next read refetches.
+  ///
+  /// **Treat returned objects as immutable.** Cache hits return the same
+  /// instance each time (that is what makes them free); mutating it in
+  /// place changes what later hits see without writing anything to the
+  /// database. To change a document, write a new value with [put].
   T? getCached(int id) {
     _assertOpen();
     final gen = _genPtr.value;

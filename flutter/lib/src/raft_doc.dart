@@ -81,6 +81,12 @@ class RaftDocWriter {
   }
 
   int _writeInto(Uint8List out, ByteData bd, int o, int id) {
+    if (_fields.length > 0xFFFF) {
+      throw StateError(
+        'document $id has ${_fields.length} fields; the wire format caps '
+        'at 65535',
+      );
+    }
     bd.setUint64(o, id, Endian.little);
     o += 8;
     bd.setUint16(o, _fields.length, Endian.little);
@@ -114,7 +120,17 @@ class RaftDocWriter {
 }
 
 class _Field {
-  _Field(String name, this.tag, this.value) : nameBytes = utf8.encode(name);
+  _Field(String name, this.tag, this.value) : nameBytes = utf8.encode(name) {
+    if (nameBytes.length > 255) {
+      // Silent truncation would corrupt the frame: the wire format's name
+      // length is one byte. Fail loudly at write time, not at decode time.
+      throw ArgumentError.value(
+        name,
+        'name',
+        'field names are capped at 255 UTF-8 bytes',
+      );
+    }
+  }
   final Uint8List nameBytes;
   final int tag;
   final Object? value;

@@ -102,7 +102,12 @@ fn document_from_json(bytes: &[u8]) -> Result<crate::query::Document, RftError> 
     if bytes.len() > RFT_MAX_DOC_JSON_LEN {
         return Err(RftError::PayloadTooLarge);
     }
-    serde_json::from_slice(bytes).map_err(|_| RftError::InvalidJson)
+    let doc: crate::query::Document =
+        serde_json::from_slice(bytes).map_err(|_| RftError::InvalidJson)?;
+    if !crate::codec::document_within_wire_limits(&doc) {
+        return Err(RftError::InvalidJson);
+    }
+    Ok(doc)
 }
 
 /// Reject database paths that are empty or contain `..` components —
