@@ -4,14 +4,14 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'raft_db'
-  s.version          = '0.0.1'
-  s.summary          = 'A new Flutter plugin project.'
+  s.version          = '0.1.0'
+  s.summary          = 'raft-db: offline-first embedded database for Flutter.'
   s.description      = <<-DESC
-A new Flutter plugin project.
+Mobile-native embedded database with durable-by-default writes, CRDT merge semantics, and frame-loop-safe reads. iOS links the static XCFramework.
                        DESC
-  s.homepage         = 'http://example.com'
+  s.homepage         = 'https://github.com/AdebayoGit/raft'
   s.license          = { :file => '../LICENSE' }
-  s.author           = { 'Your Company' => 'email@example.com' }
+  s.author           = { 'Raft' => 'noreply@raftdb.dev' }
   s.source           = { :path => '.' }
   s.source_files = 'Classes/**/*'
   s.dependency 'Flutter'

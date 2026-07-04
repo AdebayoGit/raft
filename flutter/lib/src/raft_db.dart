@@ -708,7 +708,9 @@ class RaftDb {
       if (subId != 0) {
         final id = subId;
         subId = 0;
-        await Isolate.run(() {
+        // Tracked like every other handle-dereferencing op: close() must
+        // not free the handle while an unsubscribe is in flight.
+        await _io(() {
           final db = bindings.RaftDbBindings(_openLib());
           db.rft_unobserve(
             ffi.Pointer<bindings.RaftDb>.fromAddress(address),

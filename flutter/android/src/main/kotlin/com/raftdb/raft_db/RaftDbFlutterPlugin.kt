@@ -15,7 +15,7 @@ class RaftDbFlutterPlugin: FlutterPlugin, MethodCallHandler {
   private lateinit var channel : MethodChannel
 
   override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
-    channel = MethodChannel(flutterPluginBinding.binaryMessenger, "raft_db_flutter")
+    channel = MethodChannel(flutterPluginBinding.binaryMessenger, "raft_db")
     channel.setMethodCallHandler(this)
   }
 
