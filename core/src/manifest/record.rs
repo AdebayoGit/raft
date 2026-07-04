@@ -269,6 +269,20 @@ impl ManifestRecord {
             _ => return Err(ManifestError::UnknownTag(tag, offset)),
         };
 
+        // The payload must be fully consumed: trailing bytes mean the
+        // record is not a canonical encoding, so decode(encode(x)) would
+        // not round-trip. Reject them (a corrupt/partially-written record)
+        // rather than silently dropping data. (Found by fuzzing.)
+        if payload_cursor.has_remaining() {
+            return Err(ManifestError::CorruptRecord {
+                offset,
+                reason: format!(
+                    "{} trailing bytes after record payload",
+                    payload_cursor.remaining()
+                ),
+            });
+        }
+
         Ok(Some(record))
     }
 }
@@ -286,6 +300,29 @@ mod tests {
             entry_count: 100 * id,
             file_size: 4096 * id,
         }
+    }
+
+    #[test]
+    fn decode_rejects_trailing_payload_bytes() {
+        // A record whose declared payload_len exceeds what the tag's fields
+        // occupy must be rejected, not silently truncated — otherwise
+        // decode/encode does not round-trip (fuzz finding). Build a valid
+        // SetSequence payload, pad it, and fix up the length + crc.
+        let mut payload = vec![TAG_SET_SEQUENCE];
+        payload.extend_from_slice(&0x0000_FFFF_FFFF_FFFFu64.to_be_bytes());
+        payload.extend_from_slice(&[0xAB; 55]); // trailing garbage
+        let mut bytes = Vec::new();
+        bytes.put_u32(payload.len() as u32);
+        let crc = crc32fast::hash(&payload);
+        bytes.extend_from_slice(&payload);
+        bytes.put_u32(crc);
+
+        let mut cursor: &[u8] = &bytes;
+        let err = ManifestRecord::decode(&mut cursor, 0);
+        assert!(
+            matches!(err, Err(ManifestError::CorruptRecord { .. })),
+            "trailing payload bytes must be rejected, got {err:?}"
+        );
     }
 
     #[test]
