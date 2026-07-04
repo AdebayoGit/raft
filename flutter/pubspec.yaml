@@ -1,7 +1,11 @@
 name: raft_db_flutter
-description: "A new Flutter plugin project."
-version: 0.0.1
-homepage:
+description: >-
+  raft-db: offline-first embedded database for Flutter. Durable-by-default
+  writes, typed collections with zero code generation, and frame-loop-safe
+  cached reads.
+version: 0.1.0
+homepage: https://github.com/AdebayoGit/raft
+repository: https://github.com/AdebayoGit/raft
 
 environment:
   sdk: ^3.8.1
@@ -18,7 +22,7 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
-  ffigen: ^16.0.0
+  ffigen: ^20.1.1
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -41,6 +45,8 @@ flutter:
         package: com.example.raft_db_flutter
         pluginClass: RaftDbFlutterPlugin
       ios:
+        pluginClass: RaftDbFlutterPlugin
+      macos:
         pluginClass: RaftDbFlutterPlugin
 
   # To add assets to your plugin package, add an assets section, like this:
