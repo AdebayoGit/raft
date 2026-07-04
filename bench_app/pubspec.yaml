@@ -36,7 +36,7 @@ dependencies:
   raft_bench:
     path: ../bench
   # The Raft plugin bundles the native library (.so / xcframework) on device.
-  raft_db_flutter:
+  raft_db:
     path: ../flutter
 
   ffi: ^2.1.0

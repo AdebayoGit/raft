@@ -662,13 +662,13 @@ packages:
       relative: true
     source: path
     version: "0.1.0"
-  raft_db_flutter:
+  raft_db:
     dependency: "direct main"
     description:
       path: "../flutter"
       relative: true
     source: path
-    version: "0.0.1"
+    version: "0.1.0"
   rational:
     dependency: transitive
     description:
