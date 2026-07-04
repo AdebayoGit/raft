@@ -509,6 +509,17 @@ impl Database {
     pub fn put_auto(&self, collection: &str, mut doc: Document) -> Result<DocId, DatabaseError> {
         let id = self.next_id(collection);
         doc.id = id;
+        // Persist the high-water mark BEFORE the document write. If the
+        // highest-id documents are later deleted and their tombstones
+        // compacted away, a reopen would otherwise re-derive next_doc_id
+        // from the surviving max id and re-issue previously used ids.
+        {
+            let mut engine = self.inner.lock_engine();
+            engine.put(
+                id_counter_key(collection),
+                (id.0 + 1).to_be_bytes().to_vec(),
+            )?;
+        }
         self.put(collection, doc)?;
         Ok(id)
     }
@@ -1036,6 +1047,28 @@ impl Database {
         // All rehydrated docs get version 1; new writes start at 2.
         for state in collections.values_mut() {
             state.next_version = 2;
+        }
+
+        // Rehydrate persisted auto-id counters. The counter is a durable
+        // high-water mark: take the max of it and the id-derived value so
+        // deleted-then-compacted top ids are never re-issued.
+        for (key, value) in engine.scan_prefix(META_PREFIX)? {
+            let rest = &key[META_PREFIX.len()..];
+            let Some(pos) = find_subslice(rest, ID_COUNTER_SUFFIX) else {
+                continue;
+            };
+            if pos + ID_COUNTER_SUFFIX.len() != rest.len() {
+                continue; // suffix must terminate the key
+            }
+            let Ok(collection) = std::str::from_utf8(&rest[..pos]) else {
+                continue;
+            };
+            let Ok(bytes): Result<[u8; 8], _> = value.as_slice().try_into() else {
+                continue;
+            };
+            let counter = u64::from_be_bytes(bytes);
+            let state = collections.entry(collection.to_string()).or_default();
+            state.next_doc_id = state.next_doc_id.max(counter);
         }
 
         // Rehydrate persisted index specs and rebuild each index from the
@@ -1586,6 +1619,62 @@ mod tests {
         assert_eq!(bin[0], DOC_BINARY_MAGIC);
         let decoded = deserialize_doc(&bin).unwrap();
         assert_eq!(decoded.get("age"), Some(&Value::Int(77)));
+    }
+
+    #[test]
+    fn zero_clone_read_apis_visit_expected_documents() {
+        let dir = temp_dir("zero_clone_reads");
+        let db = Database::open(&dir).unwrap();
+        for i in 1..=5 {
+            db.put("users", user(i, "u", i as i64)).unwrap();
+        }
+
+        // for_each_doc: every doc, ascending id order.
+        let mut seen = Vec::new();
+        db.for_each_doc("users", |doc| seen.push(doc.id.0));
+        assert_eq!(seen, vec![1, 2, 3, 4, 5]);
+        // Unknown collection: no visits, no panic.
+        db.for_each_doc("nope", |_| unreachable!("must not visit"));
+
+        // with_doc: present id maps, absent id yields None, no clone needed.
+        let age = db.with_doc("users", DocId(3), |doc| doc.get("age").cloned());
+        assert_eq!(age, Some(Some(Value::Int(3))));
+        assert!(db.with_doc("users", DocId(99), |_| ()).is_none());
+
+        // get_many_visit: requested order preserved, misses skipped, one pass.
+        let mut got = Vec::new();
+        db.get_many_visit("users", &[DocId(4), DocId(99), DocId(1)], |doc| {
+            got.push(doc.id.0)
+        });
+        assert_eq!(got, vec![4, 1]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn put_auto_never_reissues_ids_after_reopen_with_deleted_top() {
+        let dir = temp_dir("auto_id_reopen");
+        let (a, b, c);
+        {
+            let db = Database::open(&dir).unwrap();
+            a = db.put_auto("users", user(0, "A", 1)).unwrap();
+            b = db.put_auto("users", user(0, "B", 2)).unwrap();
+            c = db.put_auto("users", user(0, "C", 3)).unwrap();
+            // Delete the highest ids so a max(id)+1 rederivation would
+            // otherwise reuse them after reopen.
+            db.delete("users", b).unwrap();
+            db.delete("users", c).unwrap();
+        }
+        let db = Database::open(&dir).unwrap();
+        let d = db.put_auto("users", user(0, "D", 4)).unwrap();
+        assert!(
+            d.0 > c.0,
+            "reissued id {} (previously used up to {}) — auto-id              high-water mark not persisted",
+            d.0,
+            c.0
+        );
+        assert!(a.0 < d.0);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
