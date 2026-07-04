@@ -92,6 +92,13 @@ impl BloomFilter {
         }
         let num_bits = u32::from_be_bytes(data[0..4].try_into().ok()?);
         let num_hashes = u32::from_be_bytes(data[4..8].try_into().ok()?);
+        // A zero-bit filter is never produced by encode(); accepting one
+        // would make every probe compute `x % 0` and panic on the first
+        // lookup (found by fuzzing a corrupt SSTable). Zero hashes would
+        // make the filter claim nothing is present, hiding real keys.
+        if num_bits == 0 || num_hashes == 0 {
+            return None;
+        }
         let expected_byte_len = num_bits.div_ceil(8) as usize;
         let bits_data = &data[8..];
         if bits_data.len() < expected_byte_len {
@@ -218,6 +225,22 @@ mod tests {
         for i in 0u32..50 {
             assert!(decoded.may_contain(&i.to_be_bytes()));
         }
+    }
+
+    #[test]
+    fn decode_rejects_zero_bits_and_zero_hashes() {
+        // Corrupt headers must fail decode, not panic on first probe
+        // (`x % num_bits` with num_bits == 0) — fuzz finding.
+        let mut zero_bits = Vec::new();
+        zero_bits.extend_from_slice(&0u32.to_be_bytes());
+        zero_bits.extend_from_slice(&3u32.to_be_bytes());
+        assert!(BloomFilter::decode(&zero_bits).is_none());
+
+        let mut zero_hashes = Vec::new();
+        zero_hashes.extend_from_slice(&64u32.to_be_bytes());
+        zero_hashes.extend_from_slice(&0u32.to_be_bytes());
+        zero_hashes.extend_from_slice(&[0u8; 8]);
+        assert!(BloomFilter::decode(&zero_hashes).is_none());
     }
 
     #[test]
