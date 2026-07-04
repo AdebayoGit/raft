@@ -224,8 +224,37 @@ pub(crate) fn decode_doc(buf: &[u8]) -> Result<Document, CodecError> {
     })
 }
 
+/// Decode a batch, returning each document together with the byte range of
+/// its encoded frame inside `buf`. Callers that persist documents in this
+/// same codec can slice the input instead of re-encoding — the write path's
+/// bytes-in-hand fast path. Every document is fully validated before any is
+/// returned.
+pub(crate) fn decode_batch_spans(
+    buf: &[u8],
+) -> Result<Vec<(Document, std::ops::Range<usize>)>, CodecError> {
+    let mut r = Reader::new(buf);
+    let count = r.u32()? as usize;
+    let max_possible = buf.len().saturating_sub(4) / 14 + 1;
+    let mut docs = Vec::with_capacity(count.min(max_possible));
+    for _ in 0..count {
+        let len = r.u32()? as usize;
+        if len > MAX_DOC_LEN {
+            return Err(CodecError);
+        }
+        let start = r.pos;
+        let frame = r.take(len)?;
+        docs.push((decode_doc(frame)?, start..start + len));
+    }
+    if !r.is_empty() {
+        return Err(CodecError);
+    }
+    Ok(docs)
+}
+
 /// Decode a batch. Every document is fully validated before any is
-/// returned, so callers can apply all-or-nothing semantics.
+/// returned, so callers can apply all-or-nothing semantics. Production
+/// paths use [`decode_batch_spans`]; this form is the test reference.
+#[cfg(test)]
 pub(crate) fn decode_batch(buf: &[u8]) -> Result<Vec<Document>, CodecError> {
     let mut r = Reader::new(buf);
     let count = r.u32()? as usize;
@@ -299,6 +328,20 @@ mod tests {
     fn empty_batch_roundtrip() {
         let buf = encode_batch(&[]);
         assert_eq!(decode_batch(&buf).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn batch_spans_slice_back_to_identical_docs() {
+        let docs: Vec<_> = (1..=10).map(doc).collect();
+        let buf = encode_batch(&docs);
+        let spans = decode_batch_spans(&buf).unwrap();
+        assert_eq!(spans.len(), 10);
+        for (decoded, range) in &spans {
+            // Re-decoding the sliced frame yields the same document.
+            let again = decode_doc(&buf[range.clone()]).unwrap();
+            assert_eq!(again.id, decoded.id);
+            assert_eq!(again.fields, decoded.fields);
+        }
     }
 
     #[test]

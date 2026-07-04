@@ -110,25 +110,18 @@ pub unsafe extern "C" fn rft_collection_put_many(
         } else {
             unsafe { slice::from_raw_parts(batch, batch_len) }
         };
-        let docs = match codec::decode_batch(bytes) {
+        // Spans let the engine persist the caller's bytes verbatim — decode
+        // once for the in-memory state, never re-encode for disk.
+        let spans = match codec::decode_batch_spans(bytes) {
             Ok(d) => d,
             Err(_) => return RftError::InvalidJson,
         };
-        if docs.is_empty() {
-            return RftError::Ok;
-        }
-
-        let mut txn = handle.database().begin_transaction();
-        for doc in docs {
-            if txn.put(coll, doc).is_err() {
-                return RftError::InvalidHandle;
-            }
-        }
-        match txn.commit() {
+        let entries: Vec<_> = spans
+            .into_iter()
+            .map(|(doc, range)| (doc, &bytes[range]))
+            .collect();
+        match handle.database().put_batch_encoded(coll, entries) {
             Ok(()) => RftError::Ok,
-            Err(crate::database::DatabaseError::Transaction(
-                crate::transaction::TransactionError::Conflict { .. },
-            )) => RftError::TransactionConflict,
             Err(_) => RftError::IoError,
         }
     })
@@ -166,18 +159,9 @@ pub unsafe extern "C" fn rft_collection_delete_many(
             return RftError::Ok;
         }
         let id_slice = unsafe { slice::from_raw_parts(ids, count) };
-
-        let mut txn = handle.database().begin_transaction();
-        for &id in id_slice {
-            if txn.delete(coll, DocId(id)).is_err() {
-                return RftError::InvalidHandle;
-            }
-        }
-        match txn.commit() {
+        let doc_ids: Vec<DocId> = id_slice.iter().map(|&id| DocId(id)).collect();
+        match handle.database().delete_batch(coll, &doc_ids) {
             Ok(()) => RftError::Ok,
-            Err(crate::database::DatabaseError::Transaction(
-                crate::transaction::TransactionError::Conflict { .. },
-            )) => RftError::TransactionConflict,
             Err(_) => RftError::IoError,
         }
     })
@@ -324,6 +308,43 @@ mod tests {
             rft_buf_free(buf);
 
             close_and_clean(db, dir);
+        }
+    }
+
+    #[test]
+    fn put_many_persists_across_reopen() {
+        unsafe {
+            let dir = std::env::temp_dir().join(format!("rft_bulk_reopen_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let c_path = std::ffi::CString::new(dir.to_str().unwrap()).unwrap();
+
+            let mut err = RftError::Ok;
+            let db = super::super::rft_open(c_path.as_ptr(), &mut err);
+            assert!(!db.is_null());
+            let docs: Vec<_> = (1..=30).map(|i| doc(i, i as i64 * 10)).collect();
+            let batch = encode_batch(&docs);
+            assert_eq!(
+                rft_collection_put_many(db, COLL.as_ptr().cast(), batch.as_ptr(), batch.len()),
+                RftError::Ok
+            );
+            super::super::rft_close(db);
+
+            // Reopen: the verbatim-persisted binary docs must rehydrate.
+            let db2 = super::super::rft_open(c_path.as_ptr(), &mut err);
+            assert!(!db2.is_null());
+            let mut count = 0usize;
+            super::super::rft_collection_count(db2, COLL.as_ptr().cast(), &mut count);
+            assert_eq!(count, 30);
+            let mut buf = vec![0u8; 4096];
+            let mut len = buf.len();
+            assert_eq!(
+                rft_collection_get_buf(db2, COLL.as_ptr().cast(), 17, buf.as_mut_ptr(), &mut len),
+                RftError::Ok
+            );
+            let d = decode_doc(&buf[..len]).unwrap();
+            assert_eq!(d.fields.get("score"), Some(&Value::Int(170)));
+            super::super::rft_close(db2);
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 

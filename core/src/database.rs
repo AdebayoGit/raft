@@ -554,6 +554,164 @@ impl Database {
     }
 
     /// Number of documents in `collection`.
+    /// Insert or update a batch of documents atomically: one WAL write, one
+    /// fsync, one memory-apply pass. This is the write path behind
+    /// `rft_collection_put_many` — it skips the transaction machinery's
+    /// per-document bookkeeping (write-set hashing, collection-name clones)
+    /// that a batch with no reads can never need, and persists the
+    /// caller-supplied codec bytes directly instead of re-encoding.
+    ///
+    /// Each entry is `(decoded document, its codec encoding without the
+    /// storage magic prefix)`. The decoded form updates the in-memory state;
+    /// the bytes go to disk verbatim (with the magic byte prepended).
+    pub fn put_batch_encoded(
+        &self,
+        collection: &str,
+        entries: Vec<(Document, &[u8])>,
+    ) -> Result<(), DatabaseError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        // Validate everything before any durable I/O.
+        {
+            let schemas = self.inner.read_schemas();
+            if let Some(schema) = schemas.get(collection) {
+                for (doc, _) in &entries {
+                    validate_document(schema, doc).map_err(|violation| {
+                        DatabaseError::SchemaViolation {
+                            collection: collection.to_string(),
+                            violation,
+                        }
+                    })?;
+                }
+            }
+        }
+
+        let mut ops: Vec<BatchOp> = Vec::with_capacity(entries.len());
+        let mut docs: Vec<Document> = Vec::with_capacity(entries.len());
+        for (doc, raw) in entries {
+            let mut value = Vec::with_capacity(1 + raw.len());
+            value.push(DOC_BINARY_MAGIC);
+            value.extend_from_slice(raw);
+            ops.push(BatchOp::Put {
+                key: doc_key(collection, doc.id),
+                value,
+            });
+            docs.push(doc);
+        }
+
+        // Durable I/O first (single WAL write + fsync), memory apply second —
+        // same ordering as the transaction commit path.
+        let engine = self.inner.lock_engine();
+
+        #[cfg(feature = "async")]
+        let want_events = self.inner.bus.subscriber_count() > 0;
+        #[cfg(feature = "async")]
+        let mut events: Vec<MutationEvent> = Vec::new();
+
+        {
+            let mut engine = engine;
+            engine.apply_batch(ops)?;
+
+            let mut collections = self.inner.write_collections();
+            // One entry lookup for the whole batch, not one per document.
+            let state = collections.entry(collection.to_string()).or_default();
+            for doc in docs {
+                let id = doc.id;
+                let old = state.docs.remove(&id);
+                let was_present = old.is_some();
+                if let Some(ref old_doc) = old {
+                    state.unindex_doc(old_doc);
+                }
+                let version = state.next_version;
+                state.next_version += 1;
+                state.next_doc_id = state.next_doc_id.max(id.0 + 1);
+                state.index_doc(&doc);
+                state.docs.insert(id, doc);
+                state.versions.insert(id, version);
+
+                #[cfg(feature = "async")]
+                if want_events {
+                    events.push(MutationEvent {
+                        collection: collection.to_string(),
+                        doc_id: id,
+                        mutation_type: if was_present {
+                            MutationType::Update
+                        } else {
+                            MutationType::Insert
+                        },
+                        origin: MutationOrigin::Local,
+                    });
+                }
+                #[cfg(not(feature = "async"))]
+                let _ = was_present;
+            }
+        }
+
+        #[cfg(feature = "async")]
+        for event in events {
+            self.inner.bus.publish(event);
+        }
+
+        Ok(())
+    }
+
+    /// Delete a batch of ids atomically: one WAL write, one fsync, one
+    /// memory-apply pass. Missing ids are not an error (tombstones are
+    /// written). The batch counterpart of [`delete`](Self::delete), behind
+    /// `rft_collection_delete_many`.
+    pub fn delete_batch(&self, collection: &str, ids: &[DocId]) -> Result<(), DatabaseError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+
+        let ops: Vec<BatchOp> = ids
+            .iter()
+            .map(|id| BatchOp::Delete {
+                key: doc_key(collection, *id),
+            })
+            .collect();
+
+        let engine = self.inner.lock_engine();
+
+        #[cfg(feature = "async")]
+        let want_events = self.inner.bus.subscriber_count() > 0;
+        #[cfg(feature = "async")]
+        let mut events: Vec<MutationEvent> = Vec::new();
+
+        {
+            let mut engine = engine;
+            engine.apply_batch(ops)?;
+
+            let mut collections = self.inner.write_collections();
+            if let Some(state) = collections.get_mut(collection) {
+                for id in ids {
+                    state.versions.remove(id);
+                    if let Some(old) = state.docs.remove(id) {
+                        state.unindex_doc(&old);
+                        #[cfg(feature = "async")]
+                        if want_events {
+                            events.push(MutationEvent {
+                                collection: collection.to_string(),
+                                doc_id: *id,
+                                mutation_type: MutationType::Delete,
+                                origin: MutationOrigin::Local,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(feature = "async")]
+        for event in events {
+            self.inner.bus.publish(event);
+        }
+
+        Ok(())
+    }
+
     /// Visit every document in `collection` in ascending id order without
     /// cloning any of them. The collections read lock is held for the whole
     /// walk, so `f` must be quick and must not call back into the database.
