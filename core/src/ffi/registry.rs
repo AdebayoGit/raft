@@ -49,6 +49,8 @@ pub(super) static LIVE_DBS: LiveSet = LiveSet::new();
 pub(super) static LIVE_TXNS: LiveSet = LiveSet::new();
 /// Live query-result handles.
 pub(super) static LIVE_QUERY_RESULTS: LiveSet = LiveSet::new();
+/// Live collection handles.
+pub(super) static LIVE_COLLS: LiveSet = LiveSet::new();
 
 #[cfg(test)]
 mod tests {

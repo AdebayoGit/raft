@@ -31,6 +31,12 @@ pub struct RftBuf {
     data: Vec<u8>,
 }
 
+impl RftBuf {
+    pub(super) fn new(data: Vec<u8>) -> Self {
+        Self { data }
+    }
+}
+
 /// Pointer to the buffer's bytes. Valid until [`rft_buf_free`].
 ///
 /// # Safety

@@ -82,6 +82,11 @@ const SCHEMA_SUFFIX: &[u8] = b"/__schema__";
 /// and increment on every write, enabling optimistic concurrency control.
 #[derive(Debug)]
 struct CollectionState {
+    /// Monotonic mutation generation, bumped on every document write or
+    /// delete. `Arc`'d so the FFI can hand bindings a stable pointer to
+    /// the counter: a binding-side cache checks it with a plain memory
+    /// load — no FFI crossing — and treats any change as invalidation.
+    generation: Arc<std::sync::atomic::AtomicU64>,
     /// Keyed by a `BTreeMap` so iteration yields ids ascending — the
     /// query executor's determinism (and its top-k tie-break) relies on
     /// candidates arriving in ascending id order without a per-query
@@ -99,6 +104,7 @@ struct CollectionState {
 impl Default for CollectionState {
     fn default() -> Self {
         Self {
+            generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             docs: BTreeMap::new(),
             versions: HashMap::new(),
             next_version: 1,
@@ -110,6 +116,16 @@ impl Default for CollectionState {
 }
 
 impl CollectionState {
+    /// Bump the mutation generation. Called on every document write or
+    /// delete — binding-side caches treat any change as invalidation, so
+    /// missing a call site here would mean stale cached reads (guarded by
+    /// `generation_bumps_on_every_mutation_path`).
+    #[inline]
+    fn bump_generation(&self) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
     /// Add `doc` to every secondary index that covers one of its fields.
     fn index_doc(&mut self, doc: &Document) {
         for (field, index) in self.hash_indexes.iter_mut() {
@@ -289,6 +305,7 @@ impl DatabaseInner {
                     }
                     let version = coll_state.next_version;
                     coll_state.next_version += 1;
+                    coll_state.bump_generation();
                     coll_state.next_doc_id = coll_state.next_doc_id.max(id.0 + 1);
                     coll_state.index_doc(&staged.doc);
                     coll_state.docs.insert(id, staged.doc);
@@ -528,6 +545,7 @@ impl Database {
                 state.unindex_doc(&old);
             }
             state.versions.remove(&id);
+            state.bump_generation();
         }
         drop(collections);
         drop(engine);
@@ -626,6 +644,7 @@ impl Database {
                 }
                 let version = state.next_version;
                 state.next_version += 1;
+                state.bump_generation();
                 state.next_doc_id = state.next_doc_id.max(id.0 + 1);
                 state.index_doc(&doc);
                 state.docs.insert(id, doc);
@@ -688,6 +707,7 @@ impl Database {
             if let Some(state) = collections.get_mut(collection) {
                 for id in ids {
                     state.versions.remove(id);
+                    state.bump_generation();
                     if let Some(old) = state.docs.remove(id) {
                         state.unindex_doc(&old);
                         #[cfg(feature = "async")]
@@ -710,6 +730,35 @@ impl Database {
         }
 
         Ok(())
+    }
+
+    /// Shared handle to `collection`'s mutation-generation counter (the
+    /// collection entry is created if absent). The counter increments on
+    /// every document write or delete through any path. Bindings hold the
+    /// `Arc` and poll the value with a plain load — a cache whose entries
+    /// were stored at generation G is valid while the counter still reads
+    /// G, with no FFI crossing needed to check.
+    pub fn collection_generation(&self, collection: &str) -> Arc<std::sync::atomic::AtomicU64> {
+        let mut collections = self.inner.write_collections();
+        collections
+            .entry(collection.to_string())
+            .or_default()
+            .generation
+            .clone()
+    }
+
+    /// Visit each id of `ids` that exists in `collection`, in the given
+    /// order, without cloning. One read-lock hold for the whole batch —
+    /// the engine side of `rft_coll_get_many`.
+    pub fn get_many_visit(&self, collection: &str, ids: &[DocId], mut f: impl FnMut(&Document)) {
+        let collections = self.inner.read_collections();
+        if let Some(state) = collections.get(collection) {
+            for id in ids {
+                if let Some(doc) = state.docs.get(id) {
+                    f(doc);
+                }
+            }
+        }
     }
 
     /// Visit every document in `collection` in ascending id order without
@@ -1289,6 +1338,7 @@ impl DbTransaction {
             }
             let version = state.next_version;
             state.next_version += 1;
+            state.bump_generation();
             state.next_doc_id = state.next_doc_id.max(id.0 + 1);
             state.index_doc(&doc);
             state.docs.insert(id, doc);
@@ -1314,6 +1364,7 @@ impl DbTransaction {
                 .get_mut(&coll)
                 .map(|s| {
                     s.versions.remove(&id);
+                    s.bump_generation();
                     match s.docs.remove(&id) {
                         Some(old) => {
                             s.unindex_doc(&old);
@@ -1535,6 +1586,48 @@ mod tests {
         assert_eq!(bin[0], DOC_BINARY_MAGIC);
         let decoded = deserialize_doc(&bin).unwrap();
         assert_eq!(decoded.get("age"), Some(&Value::Int(77)));
+    }
+
+    #[test]
+    fn generation_bumps_on_every_mutation_path() {
+        use std::sync::atomic::Ordering;
+        let dir = temp_dir("generation_paths");
+        let db = Database::open(&dir).unwrap();
+        let gen = db.collection_generation("users");
+        let mut last = gen.load(Ordering::Acquire);
+        let mut assert_bumped = |what: &str| {
+            let now = gen.load(Ordering::Acquire);
+            assert!(now > last, "{what} did not bump the generation");
+            last = now;
+        };
+
+        // Singular put (group-commit path).
+        db.put("users", user(1, "A", 1)).unwrap();
+        assert_bumped("put");
+        // put_auto.
+        db.put_auto("users", user(0, "B", 2)).unwrap();
+        assert_bumped("put_auto");
+        // Batch put.
+        let doc = user(3, "C", 3);
+        let mut raw = Vec::new();
+        crate::codec::encode_doc(&doc, &mut raw);
+        db.put_batch_encoded("users", vec![(doc, raw.as_slice())])
+            .unwrap();
+        assert_bumped("put_batch_encoded");
+        // Transaction put + delete.
+        let mut txn = db.begin_transaction();
+        txn.put("users", user(4, "D", 4)).unwrap();
+        txn.delete("users", DocId(1)).unwrap();
+        txn.commit().unwrap();
+        assert_bumped("transaction commit");
+        // Singular delete.
+        db.delete("users", DocId(3)).unwrap();
+        assert_bumped("delete");
+        // Batch delete.
+        db.delete_batch("users", &[DocId(4)]).unwrap();
+        assert_bumped("delete_batch");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

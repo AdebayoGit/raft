@@ -203,6 +203,13 @@ typedef uint32_t RftError;
 
 #if defined(RAFT_DB_FFI)
 /**
+ * Opaque prepared-collection handle.
+ */
+typedef struct RaftCollection RaftCollection;
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
  * Opaque handle wrapping a [`Database`] and its async runtime.
  *
  * Allocated on the heap by [`rft_open`](super::rft_open) and freed by
@@ -473,6 +480,92 @@ RftError rft_collection_get_buf(struct RaftDb *db,
                                 uint64_t doc_id,
                                 uint8_t *out_buf,
                                 uintptr_t *out_len);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Open a prepared handle for `collection` (creating the collection entry
+ * if it does not exist yet). The handle caches the validated name and the
+ * collection's generation counter.
+ *
+ * # Safety
+ *
+ * - `db` must be a valid handle from [`rft_open`](super::rft_open).
+ * - `collection` must be a valid null-terminated UTF-8 C string.
+ * - `out_coll` must be a writable `*mut *mut RaftCollection`.
+ * - The returned handle must be closed with [`rft_collection_close`]
+ *   **before** `db` is closed.
+ */
+RftError rft_collection_open(struct RaftDb *db,
+                             const char *collection,
+                             struct RaftCollection **out_coll);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Close a prepared collection handle. Null or already-closed handles are
+ * safe no-ops.
+ *
+ * # Safety
+ *
+ * - After this call the handle — and any generation pointer obtained from
+ *   it — is dangling and must not be used.
+ */
+void rft_collection_close(struct RaftCollection *coll);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Stable pointer to the collection's mutation-generation counter. The
+ * value increments on every document write or delete in the collection,
+ * through any write path. Bindings read it with a plain (aligned 64-bit)
+ * load; entries cached at generation G stay valid while it still reads G.
+ *
+ * Returns null for an invalid handle.
+ *
+ * # Safety
+ *
+ * - `coll` must be a live handle; the pointer is valid until
+ *   [`rft_collection_close`].
+ */
+const uint64_t *rft_coll_generation(struct RaftCollection *coll);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Point read through a prepared handle: one lookup, zero heap allocation
+ * (thread-local scratch), binary-codec payload. Buffer semantics match
+ * [`rft_collection_get_buf`](super::rft_collection_get_buf).
+ *
+ * # Safety
+ *
+ * - `coll` must be a live handle whose database is still open.
+ * - `out_len` must be a valid `*mut usize`; `out_buf` must point to
+ *   `*out_len` writable bytes (or be null to query the size).
+ */
+RftError rft_coll_get_buf(struct RaftCollection *coll,
+                          uint64_t doc_id,
+                          uint8_t *out_buf,
+                          uintptr_t *out_len);
+#endif
+
+#if defined(RAFT_DB_FFI)
+/**
+ * Batch point-read: fetch every id in `ids` that exists, in one crossing
+ * and one lock hold. On success writes a buffer handle (binary batch
+ * encoding, input order, misses skipped) to `*out_buf`; release it with
+ * [`rft_buf_free`](super::rft_buf_free).
+ *
+ * # Safety
+ *
+ * - `coll` must be a live handle whose database is still open.
+ * - `ids` must point to `count` readable `u64`s (null only if `count`
+ *   is 0); `out_buf` must be a writable `*mut *mut RftBuf`.
+ */
+RftError rft_coll_get_many(struct RaftCollection *coll,
+                           const uint64_t *ids,
+                           uintptr_t count,
+                           struct RftBuf **out_buf);
 #endif
 
 #if defined(RAFT_DB_FFI)
