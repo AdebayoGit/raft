@@ -113,7 +113,10 @@ export class RaftDB {
    * Insert a document, letting the engine assign a fresh id.
    * Returns the assigned id.
    */
-  async collectionPutAuto(collection: string, documentJson: string): Promise<number> {
+  async collectionPutAuto(
+    collection: string,
+    documentJson: string
+  ): Promise<number> {
     this.ensureOpen()
     return this.native.collectionPutAuto(collection, documentJson)
   }
@@ -121,7 +124,10 @@ export class RaftDB {
   /**
    * Fetch a document by id. Returns the JSON, or `null` if not found.
    */
-  async collectionGet(collection: string, docId: number): Promise<string | null> {
+  async collectionGet(
+    collection: string,
+    docId: number
+  ): Promise<string | null> {
     this.ensureOpen()
     const result = await this.native.collectionGet(collection, docId)
     return result ?? null
@@ -166,7 +172,7 @@ export class RaftDB {
    * error is rethrown.
    */
   async withTransaction<T>(
-    block: (txn: RaftTransaction) => Promise<T>,
+    block: (txn: RaftTransaction) => Promise<T>
   ): Promise<T> {
     this.ensureOpen()
     const handle = await this.native.transactionBegin()
@@ -202,7 +208,7 @@ export class RaftDB {
    */
   observeCollection(
     collection: string,
-    callback: (event: MutationEvent) => void,
+    callback: (event: MutationEvent) => void
   ): () => void {
     this.ensureOpen()
     const subscriptionId = this.native.observeCollection(collection, (json) => {
@@ -226,7 +232,7 @@ export class RaftDB {
    */
   observeQuery<T = unknown>(
     queryJson: string,
-    callback: (diff: QueryDiff<T>) => void,
+    callback: (diff: QueryDiff<T>) => void
   ): () => void {
     this.ensureOpen()
     const subscriptionId = this.native.observeQuery(queryJson, (json) => {
@@ -274,11 +280,18 @@ export class RaftTransaction {
   private consumed = false
 
   /** @internal */
-  constructor(private readonly native: RaftSpec, private readonly handle: number) {}
+  constructor(
+    private readonly native: RaftSpec,
+    private readonly handle: number
+  ) {}
 
   async get(collection: string, docId: number): Promise<string | null> {
     this.ensureActive()
-    const result = await this.native.transactionGet(this.handle, collection, docId)
+    const result = await this.native.transactionGet(
+      this.handle,
+      collection,
+      docId
+    )
     return result ?? null
   }
 

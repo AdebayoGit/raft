@@ -31,8 +31,7 @@ const MESSAGES: Record<number, string> = {
     'A document or filter passed via JSON failed to parse',
   [RaftErrorCode.TransactionConflict]:
     'Transaction commit conflicted with a concurrent write',
-  [RaftErrorCode.InvalidHandle]:
-    'Native handle is invalid or already consumed',
+  [RaftErrorCode.InvalidHandle]: 'Native handle is invalid or already consumed',
   [RaftErrorCode.UnknownSubscription]: 'Subscription id is not registered',
   [RaftErrorCode.InternalPanic]:
     'Internal panic in native core; close and reopen the database',

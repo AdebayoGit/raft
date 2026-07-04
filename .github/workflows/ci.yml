@@ -93,6 +93,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@nightly
 
+      # cargo-fuzz defaults to the musl target on Linux since 0.12.x, but
+      # the nightly toolchain image ships std only for the gnu triple —
+      # builds die with "can't find crate for `core`". Pin the gnu target.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core/fuzz
@@ -106,7 +109,7 @@ jobs:
         working-directory: core
         run: |
           for target in wal_entry_decode manifest_record_decode sstable_reader_open ffi_json_envelopes; do
-            cargo +nightly fuzz run "$target" -- -max_total_time=15
+            cargo +nightly fuzz run "$target" --target x86_64-unknown-linux-gnu -- -max_total_time=15
           done
 
   # -------------------------------------------------------------- flutter

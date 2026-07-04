@@ -653,26 +653,25 @@ mod tests {
         let query = Query::collection("users").filter(Filter::eq("active", Value::Bool(true)));
         let mut lq = LiveQuery::new(query, runner.clone(), &bus);
 
-        let bus2 = bus.clone();
-        let runner2 = runner.clone();
-        tokio::spawn(async move {
-            tokio::task::yield_now().await;
-            // Insert, update, then delete — each should be a single-doc
-            // fetch, never a full query re-execution.
-            runner2.set_docs(vec![user(1, "Alice", true), user(2, "Bob", true)]);
-            bus2.publish(MutationEvent::insert("users", DocId(2)));
-            tokio::task::yield_now().await;
-            runner2.set_docs(vec![user(1, "Alice", false), user(2, "Bob", true)]);
-            bus2.publish(MutationEvent::update("users", DocId(1)));
-            tokio::task::yield_now().await;
-            runner2.set_docs(vec![user(1, "Alice", false)]);
-            bus2.publish(MutationEvent::delete("users", DocId(2)));
-        });
-
+        // Insert, update, then delete — each should be a single-doc fetch,
+        // never a full query re-execution. Each mutation is published and
+        // its diff awaited BEFORE the next state change: the broadcast bus
+        // buffers the event, and awaiting the diff guarantees the live
+        // query observed the runner state that produced it (a spawned-task
+        // version of this test raced the runner mutations against the
+        // consumer under slow sanitizer runtimes).
+        runner.set_docs(vec![user(1, "Alice", true), user(2, "Bob", true)]);
+        bus.publish(MutationEvent::insert("users", DocId(2)));
         let insert_diff = lq.next_diff().await.unwrap();
         assert_eq!(insert_diff.added.len(), 1);
+
+        runner.set_docs(vec![user(1, "Alice", false), user(2, "Bob", true)]);
+        bus.publish(MutationEvent::update("users", DocId(1)));
         let update_diff = lq.next_diff().await.unwrap();
         assert_eq!(update_diff.removed.len(), 1); // Alice no longer matches
+
+        runner.set_docs(vec![user(1, "Alice", false)]);
+        bus.publish(MutationEvent::delete("users", DocId(2)));
         let delete_diff = lq.next_diff().await.unwrap();
         assert_eq!(delete_diff.removed.len(), 1);
 
