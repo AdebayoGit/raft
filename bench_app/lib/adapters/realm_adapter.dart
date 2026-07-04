@@ -77,6 +77,22 @@ class RealmAdapter implements DbAdapter {
   }
 
   @override
+  Future<int> readMany(List<int> ids) async {
+    var found = 0;
+    for (final id in ids) {
+      if (_realm!.find<RealmDoc>(id) != null) found++;
+    }
+    return found;
+  }
+
+  @override
+  bool get supportsCachedReads => false;
+
+  @override
+  Future<int> cachedPointReads(List<int> ids) =>
+      throw UnsupportedError('no correctness-preserving cache mode');
+
+  @override
   Future<int> iterateAll() async => _realm!.all<RealmDoc>().length;
 
   @override

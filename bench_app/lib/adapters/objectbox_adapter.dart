@@ -82,6 +82,17 @@ class ObjectBoxAdapter implements DbAdapter {
   }
 
   @override
+  Future<int> readMany(List<int> ids) async =>
+      _box!.getMany(ids).whereType<ObxDoc>().length;
+
+  @override
+  bool get supportsCachedReads => false;
+
+  @override
+  Future<int> cachedPointReads(List<int> ids) =>
+      throw UnsupportedError('no correctness-preserving cache mode');
+
+  @override
   Future<int> iterateAll() async => _box!.getAll().length;
 
   @override

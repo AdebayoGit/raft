@@ -81,6 +81,26 @@ class SqfliteAppAdapter implements DbAdapter {
   }
 
   @override
+  Future<int> readMany(List<int> ids) async {
+    var found = 0;
+    for (var i = 0; i < ids.length; i += 500) {
+      final chunk = ids.sublist(i, (i + 500).clamp(0, ids.length));
+      final marks = List.filled(chunk.length, '?').join(',');
+      final rows = await _db!.query('bench',
+          where: 'id IN ($marks)', whereArgs: chunk);
+      found += rows.length;
+    }
+    return found;
+  }
+
+  @override
+  bool get supportsCachedReads => false;
+
+  @override
+  Future<int> cachedPointReads(List<int> ids) =>
+      throw UnsupportedError('no correctness-preserving cache mode');
+
+  @override
   Future<int> iterateAll() async => (await _db!.query('bench')).length;
 
   @override

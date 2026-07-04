@@ -1,36 +1,46 @@
 engine,version,workload,status,op_count,median_micros,best_micros,ops_per_sec,note
-raft-db,"0.1.0 (FFI, batch binary codec)",bulk_write,ok,10000,61321,55294,163076.3,
-raft-db,"0.1.0 (FFI, batch binary codec)",bulk_update,ok,10000,60468,57979,165376.7,
-raft-db,"0.1.0 (FFI, batch binary codec)",bulk_delete,ok,10000,41385,38305,241633.4,
-raft-db,"0.1.0 (FFI, batch binary codec)",durable_writes,ok,500,9696209,9688892,51.6,
-raft-db,"0.1.0 (FFI, batch binary codec)",concurrent_durable,ok,500,4853423,4786474,103.0,
-raft-db,"0.1.0 (FFI, batch binary codec)",point_read,ok,10000,13473,10318,742225.2,
-raft-db,"0.1.0 (FFI, batch binary codec)",iterate_all,ok,10000,2078,1884,4812319.5,
-SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,bulk_write,ok,10000,100761,93661,99244.7,
-SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,bulk_update,ok,10000,87743,80853,113969.2,
-SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,bulk_delete,ok,10000,54788,53132,182521.7,
-SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,durable_writes,ok,500,329692,327333,1516.6,
-SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,concurrent_durable,ok,500,322459,319213,1550.6,
-SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,point_read,ok,10000,639883,631322,15627.9,
-SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,iterate_all,ok,10000,8190,6854,1221001.2,
-Hive,2.2.3 (pure Dart),bulk_write,ok,10000,44248,35489,225998.9,
-Hive,2.2.3 (pure Dart),bulk_update,ok,10000,47716,38250,209573.3,
-Hive,2.2.3 (pure Dart),bulk_delete,ok,10000,8383,7125,1192890.4,
-Hive,2.2.3 (pure Dart),durable_writes,ok,500,82319,80695,6073.9,
-Hive,2.2.3 (pure Dart),concurrent_durable,ok,500,43374,42137,11527.6,
-Hive,2.2.3 (pure Dart),point_read,ok,10000,3142,2947,3182686.2,
-Hive,2.2.3 (pure Dart),iterate_all,ok,10000,144,135,69444444.4,
-Isar,isar_community 3.x (Dart VM),bulk_write,ok,10000,41121,40498,243184.7,
-Isar,isar_community 3.x (Dart VM),bulk_update,ok,10000,45504,43350,219760.9,
-Isar,isar_community 3.x (Dart VM),bulk_delete,ok,10000,32756,31600,305287.6,
-Isar,isar_community 3.x (Dart VM),durable_writes,ok,500,10340777,10258828,48.4,
-Isar,isar_community 3.x (Dart VM),concurrent_durable,ok,500,10381840,10260818,48.2,
-Isar,isar_community 3.x (Dart VM),point_read,ok,10000,507929,503251,19687.8,
-Isar,isar_community 3.x (Dart VM),iterate_all,ok,10000,2052,1978,4873294.3,
+raft-db,"0.1.0 (FFI, batch binary codec)",bulk_write,ok,10000,72944,55607,137091.5,
+raft-db,"0.1.0 (FFI, batch binary codec)",bulk_update,ok,10000,59486,57582,168106.8,
+raft-db,"0.1.0 (FFI, batch binary codec)",bulk_delete,ok,10000,45301,39258,220745.7,
+raft-db,"0.1.0 (FFI, batch binary codec)",durable_writes,ok,500,9726728,9490048,51.4,
+raft-db,"0.1.0 (FFI, batch binary codec)",concurrent_durable,ok,500,4822501,4766468,103.7,
+raft-db,"0.1.0 (FFI, batch binary codec)",point_read,ok,10000,8102,4789,1234263.1,
+raft-db,"0.1.0 (FFI, batch binary codec)",point_read_cached,ok,10000,802,800,12468827.9,
+raft-db,"0.1.0 (FFI, batch binary codec)",read_many,ok,10000,5711,5566,1751006.8,
+raft-db,"0.1.0 (FFI, batch binary codec)",iterate_all,ok,10000,3614,2964,2767017.2,
+SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,bulk_write,ok,10000,120052,115262,83297.2,
+SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,bulk_update,ok,10000,93371,88123,107099.6,
+SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,bulk_delete,ok,10000,66931,65727,149407.6,
+SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,durable_writes,ok,500,383125,374272,1305.1,
+SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,concurrent_durable,ok,500,378348,373820,1321.5,
+SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,point_read,ok,10000,784225,748735,12751.4,
+SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,point_read_cached,unsupported,0,,,,engine has no correctness-preserving cached read mode
+SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,read_many,ok,10000,19967,18575,500826.4,
+SQLite (sqflite_ffi),bundled sqlite via sqflite_common_ffi,iterate_all,ok,10000,9231,8222,1083306.3,
+Hive,2.2.3 (pure Dart),bulk_write,ok,10000,53167,36051,188086.6,
+Hive,2.2.3 (pure Dart),bulk_update,ok,10000,55423,49297,180430.5,
+Hive,2.2.3 (pure Dart),bulk_delete,ok,10000,12712,8970,786658.3,
+Hive,2.2.3 (pure Dart),durable_writes,ok,500,99063,98341,5047.3,
+Hive,2.2.3 (pure Dart),concurrent_durable,ok,500,54142,48664,9235.0,
+Hive,2.2.3 (pure Dart),point_read,ok,10000,3831,3764,2610284.5,
+Hive,2.2.3 (pure Dart),point_read_cached,unsupported,0,,,,engine has no correctness-preserving cached read mode
+Hive,2.2.3 (pure Dart),read_many,ok,10000,4136,3780,2417795.0,
+Hive,2.2.3 (pure Dart),iterate_all,ok,10000,180,171,55555555.6,
+Isar,isar_community 3.x (Dart VM),bulk_write,ok,10000,45115,41653,221655.8,
+Isar,isar_community 3.x (Dart VM),bulk_update,ok,10000,41273,40691,242289.1,
+Isar,isar_community 3.x (Dart VM),bulk_delete,ok,10000,29799,29344,335581.7,
+Isar,isar_community 3.x (Dart VM),durable_writes,ok,500,10088040,9980849,49.6,
+Isar,isar_community 3.x (Dart VM),concurrent_durable,ok,500,10002699,9974991,50.0,
+Isar,isar_community 3.x (Dart VM),point_read,ok,10000,627019,601192,15948.5,
+Isar,isar_community 3.x (Dart VM),point_read_cached,unsupported,0,,,,engine has no correctness-preserving cached read mode
+Isar,isar_community 3.x (Dart VM),read_many,ok,10000,11283,10280,886289.1,
+Isar,isar_community 3.x (Dart VM),iterate_all,ok,10000,2840,2615,3521126.8,
 ObjectBox,objectbox 4.0.x (Dart VM),bulk_write,skipped,0,,,,libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead
 ObjectBox,objectbox 4.0.x (Dart VM),durable_writes,skipped,0,,,,libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead
 ObjectBox,objectbox 4.0.x (Dart VM),concurrent_durable,skipped,0,,,,libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead
 ObjectBox,objectbox 4.0.x (Dart VM),point_read,skipped,0,,,,libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead
+ObjectBox,objectbox 4.0.x (Dart VM),point_read_cached,skipped,0,,,,libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead
+ObjectBox,objectbox 4.0.x (Dart VM),read_many,skipped,0,,,,libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead
 ObjectBox,objectbox 4.0.x (Dart VM),iterate_all,skipped,0,,,,libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead
 ObjectBox,objectbox 4.0.x (Dart VM),bulk_update,skipped,0,,,,libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead
 ObjectBox,objectbox 4.0.x (Dart VM),bulk_delete,skipped,0,,,,libobjectbox not installed for Dart VM (needs `objectbox` install script / download); benchmark ObjectBox via the Flutter app instead
@@ -38,6 +48,8 @@ Realm,not run here,bulk_write,skipped,0,,,,native lib requires a network downloa
 Realm,not run here,durable_writes,skipped,0,,,,native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)
 Realm,not run here,concurrent_durable,skipped,0,,,,native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)
 Realm,not run here,point_read,skipped,0,,,,native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)
+Realm,not run here,point_read_cached,skipped,0,,,,native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)
+Realm,not run here,read_many,skipped,0,,,,native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)
 Realm,not run here,iterate_all,skipped,0,,,,native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)
 Realm,not run here,bulk_update,skipped,0,,,,native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)
 Realm,not run here,bulk_delete,skipped,0,,,,native lib requires a network download blocked in this sandbox — benchmark via the Flutter app (flutter test integration_test -d <device>)

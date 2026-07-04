@@ -46,7 +46,15 @@ class RaftAdapter implements DbAdapter {
 
   RaftFfi? _ffi;
   ffi.Pointer<ffi.Void> _db = ffi.nullptr;
+  ffi.Pointer<ffi.Void> _coll = ffi.nullptr;
+  ffi.Pointer<ffi.Uint64> _genPtr = ffi.nullptr;
   final _cCollection = 'bench'.toNativeUtf8();
+
+  // Generation-stamped read-through cache (see rft_coll_generation): valid
+  // while the shared counter still reads _cacheGen; any write to the
+  // collection bumps it and the next cached read clears the cache.
+  final Map<int, BenchDoc> _readCache = {};
+  int _cacheGen = -1;
 
   @override
   String get name => 'raft-db';
@@ -88,6 +96,19 @@ class RaftAdapter implements DbAdapter {
       if (code != RftErr.ok || _db == ffi.nullptr) {
         throw StateError('rft_open failed (code $code)');
       }
+      final outColl = calloc<ffi.Pointer<ffi.Void>>();
+      try {
+        final cc = _ffi!.collOpen(_db, _cCollection, outColl);
+        if (cc != RftErr.ok) {
+          throw StateError('rft_collection_open failed (code $cc)');
+        }
+        _coll = outColl.value;
+        _genPtr = _ffi!.collGeneration(_coll);
+      } finally {
+        calloc.free(outColl);
+      }
+      _readCache.clear();
+      _cacheGen = -1;
     } finally {
       malloc.free(pathPtr);
       calloc.free(errPtr);
@@ -202,7 +223,7 @@ class RaftAdapter implements DbAdapter {
       final bd = ByteData.view(view.buffer, view.offsetInBytes, cap);
       for (final id in ids) {
         lenPtr.value = cap;
-        final code = _ffi!.getBuf(_db, _cCollection, id, buf, lenPtr);
+        final code = _ffi!.collGetBuf(_coll, id, buf, lenPtr);
         if (code == RftErr.ok) {
           RaftCodec.decodeDoc(view, bd, 0, lenPtr.value);
           found++;
@@ -212,7 +233,7 @@ class RaftAdapter implements DbAdapter {
           final big = malloc<ffi.Uint8>(needed);
           try {
             lenPtr.value = needed;
-            final rc = _ffi!.getBuf(_db, _cCollection, id, big, lenPtr);
+            final rc = _ffi!.collGetBuf(_coll, id, big, lenPtr);
             if (rc == RftErr.ok) {
               final bigView = big.asTypedList(needed);
               RaftCodec.decodeDoc(
@@ -233,6 +254,83 @@ class RaftAdapter implements DbAdapter {
     } finally {
       malloc.free(buf);
       calloc.free(lenPtr);
+    }
+    return found;
+  }
+
+  @override
+  Future<int> readMany(List<int> ids) async {
+    // One crossing, one lock hold: rft_coll_get_many.
+    final idsPtr = malloc<ffi.Uint64>(ids.length);
+    final outBuf = calloc<ffi.Pointer<ffi.Void>>();
+    try {
+      for (var i = 0; i < ids.length; i++) {
+        idsPtr[i] = ids[i];
+      }
+      final code = _ffi!.collGetMany(_coll, idsPtr, ids.length, outBuf);
+      if (code != RftErr.ok) {
+        throw StateError('rft_coll_get_many failed (code $code)');
+      }
+      final handle = outBuf.value;
+      try {
+        final len = _ffi!.bufLen(handle);
+        if (len == 0) return 0;
+        final data = _ffi!.bufData(handle);
+        return RaftCodec.decodeBatch(data.asTypedList(len)).length;
+      } finally {
+        _ffi!.bufFree(handle);
+      }
+    } finally {
+      malloc.free(idsPtr);
+      calloc.free(outBuf);
+    }
+  }
+
+  @override
+  bool get supportsCachedReads => true;
+
+  @override
+  Future<int> cachedPointReads(List<int> ids) async {
+    // Hot path: one plain memory load of the shared generation counter
+    // (no FFI crossing) + a Dart map lookup. Any write to the collection
+    // bumps the counter; stale entries then refetch through the handle.
+    var found = 0;
+    const cap = 8192;
+    ffi.Pointer<ffi.Uint8>? buf;
+    ffi.Pointer<ffi.UintPtr>? lenPtr;
+    try {
+      for (final id in ids) {
+        final gen = _genPtr.value;
+        if (gen != _cacheGen) {
+          _readCache.clear();
+          _cacheGen = gen;
+        }
+        final hit = _readCache[id];
+        if (hit != null) {
+          found++;
+          continue;
+        }
+        buf ??= malloc<ffi.Uint8>(cap);
+        lenPtr ??= calloc<ffi.UintPtr>();
+        lenPtr.value = cap;
+        final code = _ffi!.collGetBuf(_coll, id, buf, lenPtr);
+        if (code == RftErr.ok) {
+          final view = buf.asTypedList(cap);
+          final doc = RaftCodec.decodeDoc(
+            view,
+            ByteData.view(view.buffer, view.offsetInBytes, cap),
+            0,
+            lenPtr.value,
+          );
+          _readCache[id] = doc;
+          found++;
+        } else if (code != RftErr.notFound) {
+          throw StateError('rft_coll_get_buf failed (code $code)');
+        }
+      }
+    } finally {
+      if (buf != null) malloc.free(buf);
+      if (lenPtr != null) calloc.free(lenPtr);
     }
     return found;
   }
@@ -265,6 +363,13 @@ class RaftAdapter implements DbAdapter {
 
   @override
   Future<void> close() async {
+    if (_coll != ffi.nullptr) {
+      _ffi!.collClose(_coll);
+      _coll = ffi.nullptr;
+      _genPtr = ffi.nullptr;
+    }
+    _readCache.clear();
+    _cacheGen = -1;
     if (_db != ffi.nullptr) {
       _ffi!.close(_db);
       _db = ffi.nullptr;

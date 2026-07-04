@@ -22,6 +22,8 @@ WORKLOADS = [
     ('durable_writes', 'Insert 500 records, one durable commit each'),
     ('concurrent_durable', 'Durable commits from 4 concurrent writers'),
     ('point_read', 'Read 10k records by primary key'),
+    ('point_read_cached', 'Cached by-key reads (generation-invalidated)'),
+    ('read_many', 'Fetch 10k records by id in one batch call'),
     ('iterate_all', 'Read every record (full scan)'),
     ('bulk_update', 'Update every record in one transaction'),
     ('bulk_delete', 'Delete every record in one transaction'),

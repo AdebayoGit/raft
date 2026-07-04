@@ -73,6 +73,16 @@ class HiveAdapter implements DbAdapter {
   }
 
   @override
+  Future<int> readMany(List<int> ids) async => pointReads(ids);
+
+  @override
+  bool get supportsCachedReads => false;
+
+  @override
+  Future<int> cachedPointReads(List<int> ids) =>
+      throw UnsupportedError('no correctness-preserving cache mode');
+
+  @override
   Future<int> iterateAll() async {
     var count = 0;
     for (final _ in _box!.values) {

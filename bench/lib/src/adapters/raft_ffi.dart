@@ -42,7 +42,17 @@ class RaftFfi {
             lib.lookupFunction<_GetBufC, _GetBufD>('rft_collection_get_buf'),
         bufData = lib.lookupFunction<_BufDataC, _BufDataD>('rft_buf_data'),
         bufLen = lib.lookupFunction<_BufLenC, _BufLenD>('rft_buf_len'),
-        bufFree = lib.lookupFunction<_BufFreeC, _BufFreeD>('rft_buf_free');
+        bufFree = lib.lookupFunction<_BufFreeC, _BufFreeD>('rft_buf_free'),
+        collOpen =
+            lib.lookupFunction<_CollOpenC, _CollOpenD>('rft_collection_open'),
+        collClose = lib
+            .lookupFunction<_CollCloseC, _CollCloseD>('rft_collection_close'),
+        collGetBuf =
+            lib.lookupFunction<_CollGetBufC, _CollGetBufD>('rft_coll_get_buf'),
+        collGetMany = lib
+            .lookupFunction<_CollGetManyC, _CollGetManyD>('rft_coll_get_many'),
+        collGeneration = lib.lookupFunction<_CollGenC, _CollGenD>(
+            'rft_coll_generation');
 
   final ffi.Pointer<ffi.Void> Function(ffi.Pointer<Utf8>, ffi.Pointer<ffi.Uint32>) open;
   final void Function(ffi.Pointer<ffi.Void>) close;
@@ -65,6 +75,13 @@ class RaftFfi {
   final ffi.Pointer<ffi.Uint8> Function(ffi.Pointer<ffi.Void>) bufData;
   final int Function(ffi.Pointer<ffi.Void>) bufLen;
   final void Function(ffi.Pointer<ffi.Void>) bufFree;
+
+  // Prepared collection handles (hot-read surface).
+  final int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>, ffi.Pointer<ffi.Pointer<ffi.Void>>) collOpen;
+  final void Function(ffi.Pointer<ffi.Void>) collClose;
+  final int Function(ffi.Pointer<ffi.Void>, int, ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.UintPtr>) collGetBuf;
+  final int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Uint64>, int, ffi.Pointer<ffi.Pointer<ffi.Void>>) collGetMany;
+  final ffi.Pointer<ffi.Uint64> Function(ffi.Pointer<ffi.Void>) collGeneration;
 }
 
 /// Error codes mirror `RftError` in `core/include/raft.h`.
@@ -157,3 +174,24 @@ typedef _BufLenD = int Function(ffi.Pointer<ffi.Void>);
 
 typedef _BufFreeC = ffi.Void Function(ffi.Pointer<ffi.Void>);
 typedef _BufFreeD = void Function(ffi.Pointer<ffi.Void>);
+
+typedef _CollOpenC = ffi.Uint32 Function(ffi.Pointer<ffi.Void>,
+    ffi.Pointer<Utf8>, ffi.Pointer<ffi.Pointer<ffi.Void>>);
+typedef _CollOpenD = int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>,
+    ffi.Pointer<ffi.Pointer<ffi.Void>>);
+
+typedef _CollCloseC = ffi.Void Function(ffi.Pointer<ffi.Void>);
+typedef _CollCloseD = void Function(ffi.Pointer<ffi.Void>);
+
+typedef _CollGetBufC = ffi.Uint32 Function(ffi.Pointer<ffi.Void>, ffi.Uint64,
+    ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.UintPtr>);
+typedef _CollGetBufD = int Function(ffi.Pointer<ffi.Void>, int,
+    ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.UintPtr>);
+
+typedef _CollGetManyC = ffi.Uint32 Function(ffi.Pointer<ffi.Void>,
+    ffi.Pointer<ffi.Uint64>, ffi.UintPtr, ffi.Pointer<ffi.Pointer<ffi.Void>>);
+typedef _CollGetManyD = int Function(ffi.Pointer<ffi.Void>,
+    ffi.Pointer<ffi.Uint64>, int, ffi.Pointer<ffi.Pointer<ffi.Void>>);
+
+typedef _CollGenC = ffi.Pointer<ffi.Uint64> Function(ffi.Pointer<ffi.Void>);
+typedef _CollGenD = ffi.Pointer<ffi.Uint64> Function(ffi.Pointer<ffi.Void>);

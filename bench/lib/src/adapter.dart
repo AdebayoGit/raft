@@ -61,6 +61,20 @@ abstract class DbAdapter {
   /// ids.length).
   Future<int> pointReads(List<int> ids);
 
+  /// Fetch all of [ids] through the engine's batch-read API (one call /
+  /// crossing where the engine supports it); return how many were found.
+  Future<int> readMany(List<int> ids);
+
+  /// Whether this engine offers a correctness-preserving cached read mode
+  /// (invalidated on every write). Engines without one report the
+  /// workload as unsupported rather than faking it.
+  bool get supportsCachedReads => false;
+
+  /// Point-read each id through the engine's cached read mode. Only
+  /// called when [supportsCachedReads] is true.
+  Future<int> cachedPointReads(List<int> ids) =>
+      throw UnsupportedError('no cached read mode');
+
   /// Read every record in the store; return the count seen.
   Future<int> iterateAll();
 

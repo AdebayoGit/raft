@@ -34,6 +34,12 @@ class UnavailableAdapter implements DbAdapter {
   @override
   Future<int> pointReads(List<int> ids) async => 0;
   @override
+  Future<int> readMany(List<int> ids) async => 0;
+  @override
+  bool get supportsCachedReads => false;
+  @override
+  Future<int> cachedPointReads(List<int> ids) async => 0;
+  @override
   Future<int> iterateAll() async => 0;
   @override
   Future<void> bulkUpdate(List<BenchDoc> docs) async {}

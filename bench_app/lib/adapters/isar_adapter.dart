@@ -81,6 +81,19 @@ class IsarAdapter implements DbAdapter {
   }
 
   @override
+  Future<int> readMany(List<int> ids) async {
+    final docs = await _isar!.isarDocs.getAll(ids);
+    return docs.whereType<IsarDoc>().length;
+  }
+
+  @override
+  bool get supportsCachedReads => false;
+
+  @override
+  Future<int> cachedPointReads(List<int> ids) =>
+      throw UnsupportedError('no correctness-preserving cache mode');
+
+  @override
   Future<int> iterateAll() async {
     // findAll() materialises every object — the honest "read every record"
     // contract all adapters follow. (count() would only walk the index.)

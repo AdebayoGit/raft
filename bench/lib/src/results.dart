@@ -203,6 +203,27 @@ class BenchReport {
     }
     b.writeln();
 
+    b.writeln('## Frame budget — reads per frame at high refresh rates\n');
+    b.writeln(
+      'How many by-key reads fit in one frame before the data layer becomes '
+      'the ceiling.\n',
+    );
+    b.writeln('| Engine | Read mode | @120 Hz | @165 Hz | @240 Hz |');
+    b.writeln('|---|---|---|---|---|');
+    for (final e in engines) {
+      void frameRow(Workload w, String label) {
+        final ops = e.forWorkload(w)?.opsPerSec;
+        if (ops == null) return;
+        String per(int hz) => _fmtNum(ops / hz);
+        b.writeln('| ${e.engine} | $label | ${per(120)} | ${per(165)} | '
+            '${per(240)} |');
+      }
+
+      frameRow(Workload.pointRead, 'uncached');
+      frameRow(Workload.pointReadCached, 'cached');
+    }
+    b.writeln();
+
     b.writeln('## Engines & durability\n');
     b.writeln('| Engine | Version | Write durability (as benchmarked) |');
     b.writeln('|---|---|---|');
@@ -327,6 +348,29 @@ class BenchReport {
         'Writes = insert new records (one transaction) · Updates/Deletes = '
         'change/remove existing records (one transaction). Durable-commit '
         'behaviour is covered separately below.</p></section>');
+
+    // Frame budget at high refresh rates.
+    b.writeln('<section class="card"><h2>Frame budget — reads per frame</h2>');
+    b.writeln('<p class="sub">How many by-key reads fit inside one frame '
+        'before the data layer becomes the ceiling. 240 Hz-class panels '
+        'are already shipping.</p>');
+    b.writeln('<table><thead><tr><th>Engine</th><th>Read mode</th>'
+        '<th>@120 Hz</th><th>@165 Hz</th><th>@240 Hz</th></tr></thead><tbody>');
+    for (final e in engines) {
+      void frameRow(Workload w, String label) {
+        final ops = e.forWorkload(w)?.opsPerSec;
+        if (ops == null) return;
+        String per(int hz) => _fmtNum(ops / hz);
+        final c = colors[e.engine]!;
+        b.writeln('<tr><td><span class="dot" style="background:$c"></span>'
+            '<b>${_esc(e.engine)}</b></td><td class="mut">$label</td>'
+            '<td>${per(120)}</td><td>${per(165)}</td><td>${per(240)}</td></tr>');
+      }
+
+      frameRow(Workload.pointRead, 'uncached');
+      frameRow(Workload.pointReadCached, 'cached');
+    }
+    b.writeln('</tbody></table></section>');
 
     // Legend + durability.
     b.writeln('<section class="card"><h2>Engines &amp; write durability</h2>');

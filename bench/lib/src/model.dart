@@ -127,6 +127,12 @@ enum Workload {
       'Insert records one durable commit each, 4 concurrent writers',
       WorkloadKind.write),
   pointRead('point_read', 'Read records by primary key', WorkloadKind.read),
+  pointReadCached(
+      'point_read_cached',
+      'Read records by primary key through a correctness-preserving cache',
+      WorkloadKind.read),
+  readMany('read_many', 'Fetch a batch of records by id in one call',
+      WorkloadKind.read),
   iterateAll('iterate_all', 'Read every record (full scan)', WorkloadKind.read),
   bulkUpdate('bulk_update', 'Update every record in one transaction', WorkloadKind.write),
   bulkDelete('bulk_delete', 'Delete every record in one transaction', WorkloadKind.write);

@@ -130,6 +130,8 @@ class Harness {
             case Workload.bulkDelete:
               await adapter.bulkDelete(ids);
             case Workload.pointRead:
+            case Workload.pointReadCached:
+            case Workload.readMany:
             case Workload.iterateAll:
               break; // unreachable in write path
           }
@@ -183,6 +185,30 @@ class Harness {
             status: ResultStatus.unsupported,
             note: 'unsupported'));
       }
+
+      if (adapter.supportsCachedReads) {
+        // Warm pass populates the cache; timed samples measure the hot
+        // (generation-validated) path. Reported separately from
+        // point_read — never merged.
+        out.add(await _sampleRead(
+          adapter,
+          Workload.pointReadCached,
+          config.readCount,
+          () => adapter.cachedPointReads(dataset.readOrder),
+        ));
+      } else {
+        out.add(WorkloadResult(
+            workload: Workload.pointReadCached,
+            status: ResultStatus.unsupported,
+            note: 'engine has no correctness-preserving cached read mode'));
+      }
+
+      out.add(await _sampleRead(
+        adapter,
+        Workload.readMany,
+        config.readCount,
+        () => adapter.readMany(dataset.readOrder),
+      ));
 
       if (wantIter) {
         out.add(await _sampleRead(
