@@ -42,6 +42,19 @@ class HiveFlutterAdapter implements DbAdapter {
   }
 
   @override
+  Future<void> concurrentDurableWrites(List<List<BenchDoc>> chunks) async {
+    await Future.wait([
+      for (final chunk in chunks)
+        () async {
+          for (final d in chunk) {
+            await _box!.put(d.id, _map(d));
+            await _box!.flush();
+          }
+        }(),
+    ]);
+  }
+
+  @override
   Future<int> pointReads(List<int> ids) async {
     var found = 0;
     for (final id in ids) {

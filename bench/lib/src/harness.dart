@@ -74,6 +74,7 @@ class Harness {
     results.add(await _measureWrite(adapter, Workload.bulkUpdate));
     results.add(await _measureWrite(adapter, Workload.bulkDelete));
     results.add(await _measureWrite(adapter, Workload.durableWrites));
+    results.add(await _measureWrite(adapter, Workload.concurrentDurable));
 
     // Read-family groups share one populated store.
     results.addAll(await _measureReads(adapter));
@@ -102,7 +103,8 @@ class Harness {
         note: 'not exposed by this engine\'s API',
       );
     }
-    final isDurable = w == Workload.durableWrites;
+    final isDurable =
+        w == Workload.durableWrites || w == Workload.concurrentDurable;
     final docs = isDurable ? dataset.durableSubset : dataset.docs;
     final ids = docs.map((d) => d.id).toList(growable: false);
     final samples = <int>[];
@@ -121,6 +123,8 @@ class Harness {
               await adapter.bulkWrite(docs);
             case Workload.durableWrites:
               await adapter.durableWrites(docs);
+            case Workload.concurrentDurable:
+              await adapter.concurrentDurableWrites(_chunk(docs, 4));
             case Workload.bulkUpdate:
               await adapter.bulkUpdate(docs);
             case Workload.bulkDelete:
@@ -235,6 +239,15 @@ class Harness {
       samplesMicros: samples,
       opCount: opCount,
     );
+  }
+
+  /// Split [docs] into [n] contiguous chunks (last chunk takes the remainder).
+  static List<List<BenchDoc>> _chunk(List<BenchDoc> docs, int n) {
+    final size = (docs.length / n).ceil();
+    return [
+      for (var i = 0; i < docs.length; i += size)
+        docs.sublist(i, (i + size).clamp(0, docs.length)),
+    ];
   }
 
   Future<String> _freshStore(DbAdapter adapter) async {

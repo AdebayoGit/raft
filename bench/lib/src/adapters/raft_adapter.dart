@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
@@ -93,19 +94,6 @@ class RaftAdapter implements DbAdapter {
     }
   }
 
-  Uint8List _docJson(BenchDoc d) {
-    // raft's typed-field envelope. Built by hand (rather than a Map) to keep
-    // the hot path allocation-light.
-    final obj = {
-      'id': d.id,
-      'fields': {
-        'name': {'String': d.name},
-        'score': {'Int': d.score},
-        'payload': {'String': d.payload},
-      },
-    };
-    return utf8.encode(jsonEncode(obj));
-  }
 
   /// One FFI crossing: binary batch encode + `rft_collection_put_many`
   /// (one transaction, one WAL write, one fsync — same durability contract
@@ -151,7 +139,7 @@ class RaftAdapter implements DbAdapter {
   Future<void> durableWrites(List<BenchDoc> docs) async {
     // Each collection_put is its own commit → its own fsync.
     for (final d in docs) {
-      final json = _docJson(d);
+      final json = _encodeDocJson(d);
       final ptr = malloc<ffi.Uint8>(json.length);
       try {
         ptr.asTypedList(json.length).setAll(0, json);
@@ -163,6 +151,41 @@ class RaftAdapter implements DbAdapter {
         malloc.free(ptr);
       }
     }
+  }
+
+  @override
+  Future<void> concurrentDurableWrites(List<List<BenchDoc>> chunks) async {
+    // True thread-level concurrency: each chunk runs on its own isolate,
+    // calling the synchronous per-commit FFI against the same database
+    // handle. The core's group commit merges concurrent fsyncs — several
+    // writers share one flush instead of queueing 19 ms flushes serially.
+    final loadLibrary = _loadLibrary;
+    final dbAddress = _db.address;
+    await Future.wait([
+      for (final chunk in chunks)
+        Isolate.run(() {
+          final ffi_ = RaftFfi(loadLibrary());
+          final db = ffi.Pointer<ffi.Void>.fromAddress(dbAddress);
+          final coll = 'bench'.toNativeUtf8();
+          try {
+            for (final d in chunk) {
+              final json = _encodeDocJson(d);
+              final ptr = malloc<ffi.Uint8>(json.length);
+              try {
+                ptr.asTypedList(json.length).setAll(0, json);
+                final code = ffi_.collectionPut(db, coll, ptr, json.length);
+                if (code != RftErr.ok) {
+                  throw StateError('rft_collection_put failed (code $code)');
+                }
+              } finally {
+                malloc.free(ptr);
+              }
+            }
+          } finally {
+            malloc.free(coll);
+          }
+        }),
+    ]);
   }
 
   @override
@@ -247,4 +270,18 @@ class RaftAdapter implements DbAdapter {
       _db = ffi.nullptr;
     }
   }
+}
+
+/// raft's typed-field JSON envelope for the per-commit durable path.
+/// Top-level (not a method) so isolate closures stay sendable.
+Uint8List _encodeDocJson(BenchDoc d) {
+  final obj = {
+    'id': d.id,
+    'fields': {
+      'name': {'String': d.name},
+      'score': {'Int': d.score},
+      'payload': {'String': d.payload},
+    },
+  };
+  return utf8.encode(jsonEncode(obj));
 }

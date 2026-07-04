@@ -50,6 +50,13 @@ abstract class DbAdapter {
   /// Insert every doc in [docs], each in its own durable commit.
   Future<void> durableWrites(List<BenchDoc> docs);
 
+  /// Insert every doc in [docs], each in its own durable commit, issued by
+  /// [concurrency] concurrent clients (the docs are pre-split into chunks).
+  /// This is the real-app write pattern — UI isolate plus background workers
+  /// committing simultaneously — and is where engines with group commit pull
+  /// ahead of engines with a global writer lock.
+  Future<void> concurrentDurableWrites(List<List<BenchDoc>> chunks);
+
   /// Point-read each id in [ids]; return how many were found (should equal
   /// ids.length).
   Future<int> pointReads(List<int> ids);

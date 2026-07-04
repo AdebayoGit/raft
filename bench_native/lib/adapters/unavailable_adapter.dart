@@ -30,6 +30,8 @@ class UnavailableAdapter implements DbAdapter {
   @override
   Future<void> durableWrites(List<BenchDoc> docs) async {}
   @override
+  Future<void> concurrentDurableWrites(List<List<BenchDoc>> chunks) async {}
+  @override
   Future<int> pointReads(List<int> ids) async => 0;
   @override
   Future<int> iterateAll() async => 0;

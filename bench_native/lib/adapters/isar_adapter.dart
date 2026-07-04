@@ -82,6 +82,20 @@ class IsarAdapter implements DbAdapter {
   }
 
   @override
+  Future<void> concurrentDurableWrites(List<List<BenchDoc>> chunks) async {
+    // Isar holds a global write lock: concurrent writeTxns queue behind one
+    // another — its real concurrent behaviour.
+    await Future.wait([
+      for (final chunk in chunks)
+        () async {
+          for (final d in chunk) {
+            await _isar!.writeTxn(() => _isar!.isarDocs.put(_entity(d)));
+          }
+        }(),
+    ]);
+  }
+
+  @override
   Future<int> pointReads(List<int> ids) async {
     var found = 0;
     for (final id in ids) {

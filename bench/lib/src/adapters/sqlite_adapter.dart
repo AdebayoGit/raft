@@ -84,6 +84,25 @@ class SqliteAdapter implements DbAdapter {
   }
 
   @override
+  Future<void> concurrentDurableWrites(List<List<BenchDoc>> chunks) async {
+    // sqflite serialises statements on the database internally; concurrent
+    // clients interleave at the API level — its real concurrent behaviour.
+    await Future.wait([
+      for (final chunk in chunks)
+        () async {
+          for (final d in chunk) {
+            await _db!.insert('bench', {
+              'id': d.id,
+              'name': d.name,
+              'score': d.score,
+              'payload': d.payload,
+            });
+          }
+        }(),
+    ]);
+  }
+
+  @override
   Future<int> pointReads(List<int> ids) async {
     var found = 0;
     for (final id in ids) {

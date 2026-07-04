@@ -122,6 +122,10 @@ class BenchConfig {
 enum Workload {
   bulkWrite('bulk_write', 'Insert N records in one transaction', WorkloadKind.write),
   durableWrites('durable_writes', 'Insert records one durable commit each', WorkloadKind.write),
+  concurrentDurable(
+      'concurrent_durable',
+      'Insert records one durable commit each, 4 concurrent writers',
+      WorkloadKind.write),
   pointRead('point_read', 'Read records by primary key', WorkloadKind.read),
   iterateAll('iterate_all', 'Read every record (full scan)', WorkloadKind.read),
   bulkUpdate('bulk_update', 'Update every record in one transaction', WorkloadKind.write),
