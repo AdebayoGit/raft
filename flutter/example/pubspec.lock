@@ -242,7 +242,7 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "5.0.3"
-  raft_db_flutter:
+  raft_db:
     dependency: "direct main"
     description:
       path: ".."

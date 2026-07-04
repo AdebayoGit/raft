@@ -1,14 +1,14 @@
 import Cocoa
 import FlutterMacOS
 
-/// Minimal registrant: raft_db_flutter is an FFI plugin — all database
+/// Minimal registrant: raft_db is an FFI plugin — all database
 /// calls go straight to the vendored Rust dylib via dart:ffi. This class
 /// exists so CocoaPods links the library into the app bundle and to answer
 /// the plugin handshake.
 public class RaftDbFlutterPlugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(
-      name: "raft_db_flutter", binaryMessenger: registrar.messenger)
+      name: "raft_db", binaryMessenger: registrar.messenger)
     let instance = RaftDbFlutterPlugin()
     registrar.addMethodCallDelegate(instance, channel: channel)
   }

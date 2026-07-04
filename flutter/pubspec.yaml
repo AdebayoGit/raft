@@ -1,4 +1,4 @@
-name: raft_db_flutter
+name: raft_db
 description: >-
   raft-db: offline-first embedded database for Flutter. Durable-by-default
   writes, typed collections with zero code generation, and frame-loop-safe
@@ -42,7 +42,7 @@ flutter:
   plugin:
     platforms:
       android:
-        package: com.example.raft_db_flutter
+        package: com.raftdb.raft_db
         pluginClass: RaftDbFlutterPlugin
       ios:
         pluginClass: RaftDbFlutterPlugin

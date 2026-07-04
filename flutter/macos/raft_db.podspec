@@ -1,5 +1,5 @@
 #
-# raft_db_flutter — macOS plugin podspec.
+# raft_db — macOS plugin podspec.
 #
 # Vendors the prebuilt universal (x86_64 + arm64) raft-db dynamic library
 # so `flutter run -d macos` works with zero extra build steps. The Dart
@@ -7,7 +7,7 @@
 # once CocoaPods links it into the app bundle.
 #
 Pod::Spec.new do |s|
-  s.name             = 'raft_db_flutter'
+  s.name             = 'raft_db'
   s.version          = '0.1.0'
   s.summary          = 'raft-db: offline-first embedded database for Flutter.'
   s.description      = <<-DESC

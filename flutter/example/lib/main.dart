@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:raft_db_flutter/raft_db_flutter.dart';
+import 'package:raft_db/raft_db.dart';
 
 void main() {
   runApp(const MyApp());

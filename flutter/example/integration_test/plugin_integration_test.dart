@@ -5,7 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:raft_db_flutter/raft_db_flutter.dart';
+import 'package:raft_db/raft_db.dart';
 
 /// A plain Dart class — no annotations, no codegen, no base class.
 class Todo {
@@ -165,6 +165,22 @@ void main() {
     await sub.cancel();
     expect(events, isNotEmpty);
     expect(events.first.docId, 1);
+  });
+
+  testWidgets('collection close is idempotent and guards later use', (
+    tester,
+  ) async {
+    final coll = todos('todos_close');
+    coll.put(Todo(id: 1, title: 't', done: false));
+    expect(coll.isClosed, isFalse);
+    coll.close();
+    expect(coll.isClosed, isTrue);
+    coll.close(); // idempotent, no crash
+    expect(() => coll.get(1), throwsStateError);
+    expect(
+      () => coll.put(Todo(id: 2, title: 'x', done: false)),
+      throwsStateError,
+    );
   });
 
   testWidgets('collection on closed db throws StateError', (tester) async {

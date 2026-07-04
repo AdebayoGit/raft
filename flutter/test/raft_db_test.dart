@@ -1,8 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:raft_db_flutter/raft_db_flutter.dart';
-import 'package:raft_db_flutter/src/raft_doc.dart';
+import 'package:raft_db/raft_db.dart';
+import 'package:raft_db/src/raft_doc.dart';
 
 void main() {
   // RaftDb.open requires a real compiled native library, so runtime
@@ -182,6 +182,28 @@ void main() {
         bytes.length,
       );
       expect(() => r.string('n'), throwsA(isA<StateError>()));
+    });
+
+    test('orNull getters return values when present, null when absent', () {
+      final bytes = RaftWire.encodeDoc(1, (w) {
+        w
+          ..integer('n', 9)
+          ..float('f', 1.5)
+          ..boolean('b', false);
+      });
+      final r = RaftWire.decodeDoc(
+        bytes,
+        ByteData.view(bytes.buffer),
+        0,
+        bytes.length,
+      );
+      expect(r.integerOrNull('n'), 9);
+      expect(r.floatOrNull('f'), 1.5);
+      expect(r.booleanOrNull('b'), isFalse);
+      expect(r.integerOrNull('missing'), isNull);
+      expect(r.floatOrNull('missing'), isNull);
+      expect(r.booleanOrNull('missing'), isNull);
+      expect(r.has('missing'), isFalse);
     });
 
     test('truncated document is rejected', () {

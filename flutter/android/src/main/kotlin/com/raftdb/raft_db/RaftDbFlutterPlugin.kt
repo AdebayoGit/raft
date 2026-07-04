@@ -1,4 +1,4 @@
-package com.example.raft_db_flutter
+package com.raftdb.raft_db
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall

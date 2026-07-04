@@ -3,7 +3,7 @@ import UIKit
 
 public class RaftDbFlutterPlugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
-    let channel = FlutterMethodChannel(name: "raft_db_flutter", binaryMessenger: registrar.messenger())
+    let channel = FlutterMethodChannel(name: "raft_db", binaryMessenger: registrar.messenger())
     let instance = RaftDbFlutterPlugin()
     registrar.addMethodCallDelegate(instance, channel: channel)
   }

@@ -3,7 +3,7 @@ import UIKit
 import XCTest
 
 
-@testable import raft_db_flutter
+@testable import raft_db
 
 // This demonstrates a simple unit test of the Swift portion of this plugin's implementation.
 //
