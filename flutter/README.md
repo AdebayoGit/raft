@@ -53,30 +53,57 @@ The plugin ships native binaries for Android (.so), iOS (.xcframework), macOS, L
 ## Quickstart
 
 ```dart
-import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
 import 'package:raft_db/raft_db.dart';
+
+// A plain Dart class. No annotations, no codegen, no base class.
+class Todo {
+  Todo({required this.id, required this.title, required this.done});
+  final int id;
+  final String title;
+  final bool done;
+}
 
 Future<void> main() async {
   final dir = await getApplicationDocumentsDirectory();
   final db = await RaftDb.open('${dir.path}/raft');
 
-  // Typed collection — engine assigns the doc id
-  final aliceId = await db.collectionPutAuto(
-    'users',
-    Uint8List.fromList(utf8.encode(jsonEncode({'name': 'Alice', 'age': 30}))),
+  final todos = db.collection<Todo>(
+    name: 'todos',
+    id: (t) => t.id,
+    encode: (t, w) => w
+      ..string('title', t.title)
+      ..boolean('done', t.done),
+    decode: (r) => Todo(
+      id: r.id,
+      title: r.string('title'),
+      done: r.boolean('done'),
+    ),
   );
 
-  // Read by id
-  final raw = await db.collectionGet('users', aliceId);
-  final alice = jsonDecode(utf8.decode(raw!));
-  print(alice['name']); // Alice
+  // One durable commit for the whole batch (one WAL write, one fsync).
+  todos.putAll([
+    Todo(id: 1, title: 'ship raft', done: false),
+    Todo(id: 2, title: 'profit', done: false),
+  ]);
+
+  final todo = todos.get(1);        // ~1 µs, synchronous
+  final hot = todos.getCached(1);   // no FFI crossing while unchanged
+  final page = todos.getMany([1, 2]); // one crossing for the whole list
+  todos.watch().listen((event) => print('changed: ${event.docId}'));
 
   await db.close();
 }
 ```
 
-All native calls dispatch through `Isolate.run` so the calling isolate never blocks on I/O.
+**No build_runner.** Isar, ObjectBox, Realm and Drift all require code
+generation; raft's binary codec plus two closures replaces it.
+
+Hot operations are synchronous by design: a point read costs about a
+microsecond and cached reads never cross the FFI boundary, so both are safe
+inside `build()` — even on 165 Hz and 240 Hz displays. Writes are durable
+before the call returns (fsync per commit — the only Flutter database that
+verifies this).
 
 ---
 
@@ -87,7 +114,9 @@ Raft has **two complementary storage surfaces**:
 1. **Raw key-value** — the underlying LSM-tree store. Keys and values are arbitrary bytes. Use when you control the id space (UUIDs, slugs, content hashes).
 2. **Typed collections** — documents addressed by `int` (uint64 on the native side). The engine assigns ids on `collectionPutAuto`, or you provide one via the document's `id` field. Typed collections enable indexed queries, change notifications, and the merge surface described in [Sync](#sync--local-merge-and-peer-integration).
 
-A `RaftCollection<T>` wrapper sits on top of either surface and handles serialization. Use raw-KV when you want to control the key shape yourself, typed collections when you want the engine to do the bookkeeping.
+`RaftCollection<T>` is the typed-collection surface: binary codec, prepared
+native handles, batch commits, cached reads, and change streams. Use raw-KV
+only when you need full control of the key shape (caches, blobs).
 
 The two surfaces address **different storage namespaces**. Putting a document via one and reading via the other will not work. Pick one per logical collection.
 
@@ -161,30 +190,32 @@ final count = await db.collectionCount('users');
 final ids = await db.collectionListIds('users');
 ```
 
-For typed serialization, use `RaftCollection<T>`:
+For typed access, use `RaftCollection<T>` — the flagship API:
 
 ```dart
-class User {
-  User({required this.name, this.id = 0});
-  final int id;
-  final String name;
-
-  Map<String, dynamic> toJson() => {'id': id, 'name': name};
-  factory User.fromJson(Map<String, dynamic> j) =>
-      User(id: j['id'] as int, name: j['name'] as String);
-}
-
 final users = db.collection<User>(
   name: 'users',
-  serialize: (u) => Uint8List.fromList(utf8.encode(jsonEncode(u.toJson()))),
-  deserialize: (b) => User.fromJson(jsonDecode(utf8.decode(b))),
+  id: (u) => u.id,
+  encode: (u, w) => w
+    ..string('name', u.name)
+    ..integer('age', u.age),
+  decode: (r) => User(id: r.id, name: r.string('name'), age: r.integer('age')),
 );
 
-final aliceId = await users.putAuto(User(name: 'Alice'));
-final alice = await users.getById(aliceId); // User?
+users.put(User(id: 1, name: 'Alice', age: 30));   // one durable commit
+users.putAll(manyUsers);                          // one commit for all
+final u = users.get(1);                           // T?, ~1 µs
+final hot = users.getCached(1);                   // zero-FFI hot path
+final some = users.getMany([1, 2, 3]);            // one crossing
+final everyone = users.all();                     // one engine pass
+users.deleteAll([1, 2]);                          // one commit
+users.watch().listen((e) => rebuild());           // mutation stream
 ```
 
-`RaftCollection<T>` also exposes the legacy String-id raw-KV surface (`put(id: String, …)`, `get(id: String)`, `delete(id: String)`) for callers that want their own key namespace. These address a different storage namespace from the typed methods.
+Field types: `string`, `integer`, `float`, `boolean`, `bytes`, `nullField`
+on write; matching getters (plus `*OrNull` variants and `has`) on read.
+Missing or mistyped fields throw descriptive `StateError`s — typos fail
+loudly, not with silent zeros.
 
 ### Queries
 
@@ -520,12 +551,14 @@ final dir = await getApplicationDocumentsDirectory();
 final db = await RaftDb.open('${dir.path}/raft');
 final users = db.collection<User>(
   name: 'users',
-  serialize: (u) => Uint8List.fromList(utf8.encode(jsonEncode(u.toJson()))),
-  deserialize: (b) => User.fromJson(jsonDecode(utf8.decode(b))),
+  id: (u) => u.id,
+  encode: (u, w) => w..string('name', u.name),
+  decode: (r) => User(id: r.id, name: r.string('name')),
 );
 
-// Writes always succeed locally — no spinner, no error if offline
-await users.putAuto(User(name: 'Alice'));
+// Writes always succeed locally — no spinner, no error if offline.
+// Durable before this line returns.
+users.put(User(id: 1, name: 'Alice'));
 ```
 
 ### Caching network responses with a TTL
