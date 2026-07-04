@@ -96,6 +96,19 @@ class RaftDb {
   /// (before the native handle) by [close].
   final List<RaftCollection<dynamic>> _collections = [];
 
+  /// In-flight worker-isolate operations. [close] drains this set before
+  /// freeing the native handle, closing the use-after-free window where a
+  /// concurrent op could dereference the handle mid-free.
+  final Set<Future<Object?>> _pending = {};
+
+  /// Run [body] on a worker isolate, tracked so [close] can drain it.
+  Future<T> _io<T>(T Function() body) {
+    final future = Isolate.run(body);
+    _pending.add(future);
+    future.whenComplete(() => _pending.remove(future)).ignore();
+    return future;
+  }
+
   /// The raw native handle. Internal — used by [RaftCollection].
   ffi.Pointer<bindings.RaftDb> get nativeHandle =>
       ffi.Pointer<bindings.RaftDb>.fromAddress(_address);
@@ -178,6 +191,13 @@ class RaftDb {
       coll.close();
     }
     _collections.clear();
+    // Drain in-flight worker-isolate ops: the native handle must not be
+    // freed while any of them could still dereference it.
+    while (_pending.isNotEmpty) {
+      await Future.wait(
+        _pending.toList().map((f) => f.catchError((_) => null)),
+      );
+    }
     final address = _address;
     return Isolate.run(() {
       final db = bindings.RaftDbBindings(_openLib());
@@ -195,7 +215,7 @@ class RaftDb {
   Future<void> put(Uint8List key, Uint8List value) {
     _assertOpen();
     final address = _address;
-    return Isolate.run(() {
+    return _io(() {
       final db = bindings.RaftDbBindings(_openLib());
       final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(address);
 
@@ -228,7 +248,7 @@ class RaftDb {
   Future<void> delete(Uint8List key) {
     _assertOpen();
     final address = _address;
-    return Isolate.run(() {
+    return _io(() {
       final db = bindings.RaftDbBindings(_openLib());
       final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(address);
 
@@ -258,7 +278,7 @@ class RaftDb {
   Future<Uint8List?> get(Uint8List key) {
     _assertOpen();
     final address = _address;
-    return Isolate.run(() {
+    return _io(() {
       final db = bindings.RaftDbBindings(_openLib());
       final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(address);
 
@@ -324,7 +344,7 @@ class RaftDb {
   Future<void> collectionPut(String collection, Uint8List documentJson) {
     _assertOpen();
     final addr = _address;
-    return Isolate.run(() {
+    return _io(() {
       final db = bindings.RaftDbBindings(_openLib());
       final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
       final cName = collection.toNativeUtf8();
@@ -352,7 +372,7 @@ class RaftDb {
   Future<int> collectionPutAuto(String collection, Uint8List documentJson) {
     _assertOpen();
     final addr = _address;
-    return Isolate.run(() {
+    return _io(() {
       final db = bindings.RaftDbBindings(_openLib());
       final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
       final cName = collection.toNativeUtf8();
@@ -384,7 +404,7 @@ class RaftDb {
   Future<Uint8List?> collectionGet(String collection, int docId) {
     _assertOpen();
     final addr = _address;
-    return Isolate.run(() {
+    return _io(() {
       final db = bindings.RaftDbBindings(_openLib());
       final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
       final cName = collection.toNativeUtf8();
@@ -433,7 +453,7 @@ class RaftDb {
   Future<void> collectionDelete(String collection, int docId) {
     _assertOpen();
     final addr = _address;
-    return Isolate.run(() {
+    return _io(() {
       final db = bindings.RaftDbBindings(_openLib());
       final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
       final cName = collection.toNativeUtf8();
@@ -452,7 +472,7 @@ class RaftDb {
   Future<int> collectionCount(String collection) {
     _assertOpen();
     final addr = _address;
-    return Isolate.run(() {
+    return _io(() {
       final db = bindings.RaftDbBindings(_openLib());
       final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
       final cName = collection.toNativeUtf8();
@@ -475,7 +495,7 @@ class RaftDb {
   Future<List<int>> collectionListIds(String collection) {
     _assertOpen();
     final addr = _address;
-    return Isolate.run(() {
+    return _io(() {
       final db = bindings.RaftDbBindings(_openLib());
       final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
       final cName = collection.toNativeUtf8();
@@ -525,7 +545,7 @@ class RaftDb {
   Future<List<Uint8List>> executeQuery(Uint8List queryJson) {
     _assertOpen();
     final addr = _address;
-    return Isolate.run(() {
+    return _io(() {
       final db = bindings.RaftDbBindings(_openLib());
       final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
       final jsonPtr = malloc<ffi.Uint8>(queryJson.length);
@@ -747,7 +767,7 @@ class RaftDb {
   Future<RaftTransaction> beginTransaction() async {
     _assertOpen();
     final addr = _address;
-    final txnAddr = await Isolate.run(() {
+    final txnAddr = await _io(() {
       final db = bindings.RaftDbBindings(_openLib());
       final handle = ffi.Pointer<bindings.RaftDb>.fromAddress(addr);
       final outTxn = calloc<ffi.Pointer<bindings.RaftTransaction>>();
@@ -776,7 +796,11 @@ class RaftDb {
       await txn.commit();
       return result;
     } catch (_) {
-      await txn.rollback();
+      try {
+        await txn.rollback();
+      } catch (_) {
+        // Preserve the original failure; a rollback error would mask it.
+      }
       rethrow;
     }
   }

@@ -68,6 +68,11 @@ class RaftCollection<T> {
       malloc.free(cName);
       calloc.free(out);
     }
+    // Allocated only after the native open succeeded — a throwing
+    // constructor must not leak native memory (close() is the only
+    // place these are freed, and it never runs for a discarded object).
+    _readBuf = malloc<ffi.Uint8>(_readBufCap);
+    _readLen = calloc<ffi.UintPtr>();
   }
 
   /// Collection name.
@@ -88,10 +93,12 @@ class RaftCollection<T> {
   final Map<int, T> _cache = {};
   int _cacheGen = -1;
 
-  // Reusable read buffer for the synchronous get path.
+  // Reusable read buffer for the synchronous get path. Allocated at the
+  // end of the constructor (after the native open succeeds) so a failed
+  // open cannot leak them.
   static const _readBufCap = 16 * 1024;
-  final ffi.Pointer<ffi.Uint8> _readBuf = malloc<ffi.Uint8>(_readBufCap);
-  final ffi.Pointer<ffi.UintPtr> _readLen = calloc<ffi.UintPtr>();
+  late final ffi.Pointer<ffi.Uint8> _readBuf;
+  late final ffi.Pointer<ffi.UintPtr> _readLen;
 
   // ── Writes ────────────────────────────────────────────────────────────
 
