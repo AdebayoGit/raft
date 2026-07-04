@@ -109,7 +109,11 @@ jobs:
         working-directory: core
         run: |
           for target in wal_entry_decode manifest_record_decode sstable_reader_open ffi_json_envelopes; do
-            cargo +nightly fuzz run "$target" --target x86_64-unknown-linux-gnu -- -max_total_time=15
+            # Always replay committed regression seeds (deterministic — past
+            # fuzz finds must never silently return), then explore for 15s.
+            seeds="fuzz/seeds/$target"
+            [ -d "$seeds" ] || seeds=""
+            cargo +nightly fuzz run "$target" $seeds --target x86_64-unknown-linux-gnu -- -max_total_time=15
           done
 
   # -------------------------------------------------------------- flutter
