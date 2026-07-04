@@ -19,8 +19,6 @@
 //! against the remaining input, so a corrupt or malicious prefix cannot
 //! force an out-of-range read or an oversized allocation.
 
-use std::collections::HashMap;
-
 use crate::index::DocId;
 use crate::query::{Document, Value};
 
@@ -188,7 +186,7 @@ pub(crate) fn decode_doc(buf: &[u8]) -> Result<Document, CodecError> {
     let mut r = Reader::new(buf);
     let id = r.u64()?;
     let field_count = r.u16()? as usize;
-    let mut fields = HashMap::with_capacity(field_count);
+    let mut fields = crate::query::Fields::with_capacity(field_count);
     for _ in 0..field_count {
         let name_len = r.u8()? as usize;
         let name = std::str::from_utf8(r.take(name_len)?)
@@ -281,7 +279,7 @@ mod tests {
     use super::*;
 
     fn doc(id: u64) -> Document {
-        let mut fields = HashMap::new();
+        let mut fields = crate::query::Fields::new();
         fields.insert("name".into(), Value::String(format!("user-{id}")));
         fields.insert("score".into(), Value::Int(id as i64));
         fields.insert("ratio".into(), Value::Float(0.5));

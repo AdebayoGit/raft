@@ -19,7 +19,7 @@ mod filter;
 mod planner;
 mod sort;
 
-pub use document::{Document, DocumentStore, Value};
+pub use document::{Document, DocumentStore, Fields, Value};
 pub use executor::{IndexSet, QueryExecutor};
 pub use filter::{Filter, Predicate};
 pub use planner::{IndexInfo, IndexKind, QueryPlan, QueryPlanner, ScanStrategy};

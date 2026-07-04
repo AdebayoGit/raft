@@ -224,7 +224,6 @@ pub unsafe extern "C" fn rft_coll_get_many(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::atomic::Ordering;
 
     use super::super::bulk::rft_collection_put_many;
@@ -234,7 +233,7 @@ mod tests {
     use crate::query::{Document, Value};
 
     fn doc(id: u64, score: i64) -> Document {
-        let mut fields = HashMap::new();
+        let mut fields = crate::query::Fields::new();
         fields.insert("score".into(), Value::Int(score));
         Document {
             id: DocId(id),

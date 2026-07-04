@@ -4,7 +4,6 @@
 //! [`DocumentStore`] trait abstracts the backing storage so the query
 //! engine can be tested without touching disk.
 
-use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -96,18 +95,132 @@ impl PartialOrd for Value {
     }
 }
 
-/// A document: a unique ID plus a map of field names to values.
+/// A document's field set — a small ordered map stored as a `Vec`.
+///
+/// Documents typically carry a handful of fields; a linear scan over a
+/// vector beats hashing at that size and costs one allocation instead of
+/// a `HashMap`'s bucket table. Profiling on the 10k-doc bulk-write path
+/// showed the per-document `HashMap` as the largest remaining allocation
+/// source. The serde representation stays a JSON map, so documents
+/// persisted by older (JSON) versions load unchanged.
+#[derive(Debug, Clone, Default)]
+pub struct Fields(Vec<(String, Value)>);
+
+impl Fields {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn with_capacity(n: usize) -> Self {
+        Self(Vec::with_capacity(n))
+    }
+
+    pub fn get(&self, name: &str) -> Option<&Value> {
+        self.0.iter().find_map(|(k, v)| (k == name).then_some(v))
+    }
+
+    /// Insert or replace `name`. Last write wins, matching map semantics.
+    pub fn insert(&mut self, name: String, value: Value) {
+        match self.0.iter_mut().find(|(k, _)| *k == name) {
+            Some((_, v)) => *v = value,
+            None => self.0.push((name, value)),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
+        self.0.iter().map(|(k, v)| (k, v))
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.0.iter().map(|(k, _)| k)
+    }
+}
+
+/// Order-independent equality — field sets are logically maps.
+impl PartialEq for Fields {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len() && self.0.iter().all(|(k, v)| other.get(k) == Some(v))
+    }
+}
+
+impl FromIterator<(String, Value)> for Fields {
+    fn from_iter<I: IntoIterator<Item = (String, Value)>>(iter: I) -> Self {
+        let mut f = Fields::new();
+        for (k, v) in iter {
+            f.insert(k, v);
+        }
+        f
+    }
+}
+
+impl<'a> IntoIterator for &'a Fields {
+    type Item = (&'a String, &'a Value);
+    type IntoIter = std::iter::Map<
+        std::slice::Iter<'a, (String, Value)>,
+        fn(&'a (String, Value)) -> (&'a String, &'a Value),
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter().map(|(k, v)| (k, v))
+    }
+}
+
+impl Serialize for Fields {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (k, v) in &self.0 {
+            map.serialize_entry(k, v)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Fields {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Fields;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a map of field names to values")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut access: A,
+            ) -> Result<Fields, A::Error> {
+                let mut fields = Fields::with_capacity(access.size_hint().unwrap_or(0));
+                while let Some((k, v)) = access.next_entry::<String, Value>()? {
+                    fields.insert(k, v);
+                }
+                Ok(fields)
+            }
+        }
+        deserializer.deserialize_map(V)
+    }
+}
+
+/// A document: a unique ID plus an ordered set of named field values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Document {
     pub id: DocId,
-    pub fields: HashMap<String, Value>,
+    pub fields: Fields,
 }
 
 impl Document {
     pub fn new(id: DocId) -> Self {
         Self {
             id,
-            fields: HashMap::new(),
+            fields: Fields::new(),
         }
     }
 

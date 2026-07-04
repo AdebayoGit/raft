@@ -258,7 +258,6 @@ pub unsafe extern "C" fn rft_collection_get_buf(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
 
     use super::super::RftError;
     use super::*;
@@ -266,7 +265,7 @@ mod tests {
     use crate::query::{Document, Value};
 
     fn doc(id: u64, score: i64) -> Document {
-        let mut fields = HashMap::new();
+        let mut fields = crate::query::Fields::new();
         fields.insert("name".into(), Value::String(format!("user-{id}")));
         fields.insert("score".into(), Value::Int(score));
         Document {
