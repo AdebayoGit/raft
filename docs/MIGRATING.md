@@ -51,3 +51,7 @@ backend or Relay), concurrent edits from two devices converge
 deterministically — no conflict dialogs, no "last write wins" surprises you
 didn't choose. You don't have to think about any of this until the day you
 need it; the schema defaults to pure local semantics.
+
+## Rust counter checked values
+
+`Counter::value()` and `Counter::device_delta()` now return `Result<i64, CounterOverflow>` instead of silently wrapping values outside the signed 64-bit range. Handle the error or use `exact_value()` / `exact_device_delta()` when an `i128` result is appropriate. The serialized PN-counter representation and merge behavior are unchanged.

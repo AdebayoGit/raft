@@ -376,7 +376,7 @@ mod tests {
             &remote,
             &remote_ctx(SyncAuthority::LocalFirst),
         );
-        assert_eq!(local.value(), 15); // 10 + 5
+        assert_eq!(local.value(), Ok(15)); // 10 + 5
     }
 
     #[test]
@@ -393,9 +393,9 @@ mod tests {
             &remote_ctx(SyncAuthority::RemoteAuthority),
         );
         // Local deltas (device A +10) are gone — replaced by remote.
-        assert_eq!(local.value(), 3);
-        assert_eq!(local.device_delta(DEVICE_A), 0);
-        assert_eq!(local.device_delta(DEVICE_B), 3);
+        assert_eq!(local.value(), Ok(3));
+        assert_eq!(local.device_delta(DEVICE_A), Ok(0));
+        assert_eq!(local.device_delta(DEVICE_B), Ok(3));
     }
 
     #[test]
@@ -411,7 +411,7 @@ mod tests {
             &remote,
             &remote_ctx(SyncAuthority::RemoteFirst),
         );
-        assert_eq!(local.value(), 15);
+        assert_eq!(local.value(), Ok(15));
     }
 
     // -- OrSet --------------------------------------------------------------

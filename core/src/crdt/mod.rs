@@ -10,7 +10,7 @@ mod lww;
 mod orset;
 mod stability;
 
-pub use counter::Counter;
+pub use counter::{Counter, CounterOverflow};
 pub use lww::LwwRegister;
 pub use orset::OrSet;
 pub use stability::StabilityFrontier;

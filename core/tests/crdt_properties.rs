@@ -154,7 +154,7 @@ proptest! {
         let b = counter_from_ops(&ops_b);
         let ab = merged(&a, &b);
         prop_assert_eq!(ab.clone(), merged(&b, &a));
-        prop_assert_eq!(ab.value(), a.value() + b.value());
+        prop_assert_eq!(ab.exact_value(), a.exact_value() + b.exact_value());
     }
 
     /// Add-wins: an add concurrent with a remove (the remove never
