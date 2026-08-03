@@ -240,3 +240,62 @@ jobs:
       - name: jest
         working-directory: rn
         run: bun run test
+
+  rn-android-native:
+    name: binding / rn android native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: oven-sh/setup-bun@v2
+      - name: install JavaScript dependencies
+        working-directory: rn
+        run: bun install --frozen-lockfile
+      - name: rebuild Rust Android library
+        working-directory: core
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          cargo ndk -t x86_64 -o ../rn/android/src/main/jniLibs build --release --features ffi
+      - name: verify exported C ABI
+        run: $ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm -D --defined-only rn/android/src/main/jniLibs/x86_64/libraftdb.so | grep ' rft_open$'
+      - name: assemble example through CMake and Nitro autolinking
+        working-directory: rn/example/android
+        run: ./gradlew assembleDebug --no-daemon
+
+  rn-ios-native:
+    name: binding / rn ios simulator
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim, x86_64-apple-ios
+      - uses: oven-sh/setup-bun@v2
+      - name: install JavaScript dependencies
+        working-directory: rn
+        run: bun install --frozen-lockfile
+      - name: rebuild and package Rust simulator library
+        working-directory: core
+        run: |
+          cargo build --release --target aarch64-apple-ios-sim --features ffi
+          cargo build --release --target x86_64-apple-ios --features ffi
+          lipo -create target/aarch64-apple-ios-sim/release/libraftdb.a target/x86_64-apple-ios/release/libraftdb.a -output target/libraftdb-sim.a
+          rm -rf ../rn/ios/RaftDB.xcframework
+          xcodebuild -create-xcframework -library target/libraftdb-sim.a -output ../rn/ios/RaftDB.xcframework
+      - name: verify exported C ABI
+        run: nm -gU rn/ios/RaftDB.xcframework/ios-arm64_x86_64-simulator/libraftdb-sim.a | grep ' _rft_open$'
+      - name: install pods
+        working-directory: rn/example/ios
+        run: pod install
+      - name: build example workspace
+        working-directory: rn/example/ios
+        run: xcodebuild -workspace RaftExample.xcworkspace -scheme RaftExample -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build
