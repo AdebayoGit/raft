@@ -59,6 +59,15 @@ jest.mock('react-native-nitro-modules', () => ({
         callback({ key: query, value: current })
         return 'sub-123'
       },
+      observeCollection: (
+        _collection: string,
+        callback: (json: string) => void
+      ) => {
+        callback(
+          '{"collection":"users","doc_id":0,"mutation_type":"ResyncRequired","origin":"Local"}'
+        )
+        return 'sub-resync'
+      },
       unwatch: (subscriptionId: string) => {
         mockCalls.unwatch(subscriptionId)
       },
@@ -211,6 +220,17 @@ describe('RaftDB', () => {
       const db = RaftDB.open('/tmp/test.db')
       db.close()
       expect(() => db.watch('k', () => {})).toThrow('closed')
+    })
+  })
+
+  describe('collection observations', () => {
+    it('parses ResyncRequired control events', () => {
+      const db = RaftDB.open('/tmp/test.db')
+      const events: Array<{ mutation_type: string; doc_id: number }> = []
+      db.observeCollection('users', (event) => events.push(event))
+      expect(events).toEqual([
+        { collection: 'users', doc_id: 0, mutation_type: 'ResyncRequired', origin: 'Local' },
+      ])
     })
   })
 

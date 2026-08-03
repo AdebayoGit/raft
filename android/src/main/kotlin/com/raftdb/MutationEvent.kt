@@ -9,6 +9,7 @@ enum class MutationKind {
     INSERT,
     UPDATE,
     DELETE,
+    RESYNC_REQUIRED,
 }
 
 /**
@@ -47,6 +48,7 @@ data class MutationEvent(
                 "Insert" -> MutationKind.INSERT
                 "Update" -> MutationKind.UPDATE
                 "Delete" -> MutationKind.DELETE
+                "ResyncRequired" -> MutationKind.RESYNC_REQUIRED
                 else -> throw IllegalArgumentException("Unknown mutation_type: $t")
             }
             val origin = if (obj.optString("origin") == "Remote") {

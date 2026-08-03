@@ -292,7 +292,7 @@ The same shape works on Kotlin (`Flow.filter { it.origin == LOCAL }`) and TypeSc
 
 ### Lagging subscribers
 
-The Rust core uses a `tokio::broadcast` channel with a per-subscriber receiver. If a subscriber falls behind by more than the channel capacity (default 1024 events), the Rust side emits `RecvError::Lagged` and the platforms silently skip those events to keep the stream live.
+The Rust core uses a bounded `tokio::broadcast` channel with a per-subscriber receiver. If a collection subscriber falls behind, it receives a `ResyncRequired` control event and the stream remains live. On this event, reload the collection before trusting later incremental events. Its `doc_id` is `0`; both `doc_id` and `origin` are meaningless for this control event. Live queries continue to recover internally by fully re-evaluating their query.
 
 If you need precise reconciliation after a lag, re-query the collection and reconcile against the in-memory state. The query is index-aware and cheap.
 

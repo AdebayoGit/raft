@@ -180,6 +180,13 @@ impl<R: QueryRunner> LiveQuery<R> {
 
         let current = match event.mutation_type {
             MutationType::Delete => None,
+            MutationType::ResyncRequired => {
+                return QueryDiff {
+                    added: Vec::new(),
+                    removed: Vec::new(),
+                    updated: Vec::new(),
+                };
+            }
             MutationType::Insert | MutationType::Update => self
                 .runner
                 .get_document(&event.collection, event.doc_id)

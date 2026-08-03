@@ -30,13 +30,12 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::ptr;
-use std::slice;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::query::Query;
-use crate::reactive::QueryDiff;
+use crate::reactive::{MutationEvent, QueryDiff};
 
 use super::error::RftError;
 use super::handle::RaftDb;
@@ -183,7 +182,12 @@ pub unsafe extern "C" fn rft_observe_dart_port(
                             post_to_dart_port(port, &json);
                         }
                     }
-                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Lagged(_)) => {
+                        let event = MutationEvent::resync_required(&coll);
+                        if let Ok(json) = serde_json::to_string(&event) {
+                            post_to_dart_port(port, &json);
+                        }
+                    }
                     Err(RecvError::Closed) => break,
                 }
             }
@@ -222,14 +226,17 @@ pub unsafe extern "C" fn rft_observe_query_dart_port(
             Ok(h) => h,
             Err(e) => return e,
         };
-        if out_sub_id.is_null() || (query_json.is_null() && query_json_len > 0) {
+        if out_sub_id.is_null() {
             return RftError::NullPointer;
         }
         if POST_COBJECT.load(Ordering::Acquire) == 0 {
             return RftError::DartApiNotInitialized;
         }
 
-        let json = unsafe { slice::from_raw_parts(query_json, query_json_len) };
+        let json = match unsafe { super::input_slice(query_json, query_json_len) } {
+            Ok(value) => value,
+            Err(e) => return e,
+        };
         let query: Query = match query_from_json(json) {
             Ok(q) => q,
             Err(e) => return e,

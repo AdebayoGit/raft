@@ -16,6 +16,15 @@ import org.junit.Test
  */
 class RaftDbTest {
 
+    @Test
+    fun `parses resync required mutation control event`() {
+        val event = MutationEvent.fromJson(
+            """{"collection":"users","doc_id":0,"mutation_type":"ResyncRequired","origin":"Local"}""",
+        )
+        assertEquals(MutationKind.RESYNC_REQUIRED, event.mutationType)
+        assertEquals(0L, event.docId)
+    }
+
     // -- RaftError mapping ---------------------------------------------------
 
     @Test

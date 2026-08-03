@@ -13,6 +13,8 @@ pub enum MutationType {
     Update,
     /// A document was deleted.
     Delete,
+    /// Incremental events were lost; consumers must reload the collection.
+    ResyncRequired,
 }
 
 /// Whether a mutation originated locally or from a remote sync.
@@ -66,6 +68,16 @@ impl MutationEvent {
         }
     }
 
+    /// Control event emitted when a bounded subscriber falls behind.
+    pub fn resync_required(collection: impl Into<String>) -> Self {
+        Self {
+            collection: collection.into(),
+            doc_id: DocId(0),
+            mutation_type: MutationType::ResyncRequired,
+            origin: MutationOrigin::Local,
+        }
+    }
+
     /// Returns a copy of this event with the given origin.
     pub fn with_origin(mut self, origin: MutationOrigin) -> Self {
         self.origin = origin;
@@ -95,6 +107,14 @@ mod tests {
     fn delete_event() {
         let e = MutationEvent::delete("sessions", DocId(99));
         assert_eq!(e.mutation_type, MutationType::Delete);
+    }
+
+    #[test]
+    fn resync_event_uses_control_sentinel() {
+        let event = MutationEvent::resync_required("users");
+        assert_eq!(event.collection, "users");
+        assert_eq!(event.doc_id, DocId(0));
+        assert_eq!(event.mutation_type, MutationType::ResyncRequired);
     }
 
     #[test]

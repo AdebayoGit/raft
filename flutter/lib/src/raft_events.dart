@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 /// What kind of mutation occurred.
-enum MutationKind { insert, update, delete }
+enum MutationKind { insert, update, delete, resyncRequired }
 
 /// Whether the mutation originated locally or arrived from a network peer.
 enum MutationOrigin { local, remote }
@@ -43,6 +43,9 @@ class MutationEvent {
         break;
       case 'Delete':
         kind = MutationKind.delete;
+        break;
+      case 'ResyncRequired':
+        kind = MutationKind.resyncRequired;
         break;
       default:
         throw FormatException('Unknown mutation_type: ${j['mutation_type']}');

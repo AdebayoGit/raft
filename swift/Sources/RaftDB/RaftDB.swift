@@ -157,6 +157,7 @@ public struct MutationEvent: Sendable, Codable, Equatable {
         case insert = "Insert"
         case update = "Update"
         case delete = "Delete"
+        case resyncRequired = "ResyncRequired"
     }
 
     public enum Origin: String, Sendable, Codable {

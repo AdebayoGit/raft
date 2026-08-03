@@ -233,7 +233,7 @@ final class MutationEventTests: XCTestCase {
     }
 
     func testRoundTripAllKinds() throws {
-        for kind in [MutationEvent.Kind.insert, .update, .delete] {
+        for kind in [MutationEvent.Kind.insert, .update, .delete, .resyncRequired] {
             let event = MutationEvent(
                 collection: "c",
                 docId: 1,
@@ -244,6 +244,13 @@ final class MutationEventTests: XCTestCase {
             let decoded = try JSONDecoder().decode(MutationEvent.self, from: data)
             XCTAssertEqual(decoded, event)
         }
+    }
+
+    func testDecodeResyncRequiredControlEvent() throws {
+        let payload = #"{"collection":"users","doc_id":0,"mutation_type":"ResyncRequired","origin":"Local"}"#
+        let event = try JSONDecoder().decode(MutationEvent.self, from: Data(payload.utf8))
+        XCTAssertEqual(event.mutationType, .resyncRequired)
+        XCTAssertEqual(event.docId, 0)
     }
 }
 

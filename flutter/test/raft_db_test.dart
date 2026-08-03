@@ -5,6 +5,17 @@ import 'package:raft_db/raft_db.dart';
 import 'package:raft_db/src/raft_doc.dart';
 
 void main() {
+  test('parses ResyncRequired mutation control events', () {
+    final event = MutationEvent.fromJson({
+      'collection': 'users',
+      'doc_id': 0,
+      'mutation_type': 'ResyncRequired',
+      'origin': 'Local',
+    });
+    expect(event.mutationType, MutationKind.resyncRequired);
+    expect(event.docId, 0);
+  });
+
   // RaftDb.open requires a real compiled native library, so runtime
   // integration tests live in integration_test/. These unit tests cover
   // the pure-Dart surface: exception formatting, error code mapping,

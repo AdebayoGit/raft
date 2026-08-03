@@ -9,7 +9,7 @@ const RaftHybrid = NitroModules.createHybridObject<RaftSpec>('Raft')
 /**
  * What kind of mutation occurred.
  */
-export type MutationKind = 'Insert' | 'Update' | 'Delete'
+export type MutationKind = 'Insert' | 'Update' | 'Delete' | 'ResyncRequired'
 
 /**
  * Whether the mutation originated locally or arrived from a network peer.
