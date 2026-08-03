@@ -8,7 +8,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'raft_db'
-  s.version          = '0.1.0'
+  s.version          = '0.0.1'
   s.summary          = 'raft-db: offline-first embedded database for Flutter.'
   s.description      = <<-DESC
 Mobile-native embedded database with durable-by-default writes, CRDT merge

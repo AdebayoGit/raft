@@ -39,7 +39,7 @@ Offline-first key-value and document storage with reactive queries, optimistic t
 
 ```yaml
 dependencies:
-  raft_db: ^0.1.0
+  raft_db: ^0.0.1
 ```
 
 ```bash

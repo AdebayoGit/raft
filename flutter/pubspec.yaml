@@ -3,7 +3,7 @@ description: >-
   raft-db: offline-first embedded database for Flutter. Durable-by-default
   writes, typed collections with zero code generation, and frame-loop-safe
   cached reads.
-version: 0.1.0
+version: 0.0.1
 homepage: https://github.com/AdebayoGit/raft
 repository: https://github.com/AdebayoGit/raft
 

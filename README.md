@@ -52,7 +52,7 @@ The Rust core in [`core/`](core/) compiles to a single static library. Platform 
 | React Native | `react-native-raft` (npm)     | [rn/README.md](rn/README.md)                  |
 | Rust         | `raft-db` (crates.io)         | See [Rust API](#rust-api) below               |
 
-> **Status:** v0.1.0 ships the storage engine, document layer, queries, transactions, and live observers. Sync is targeted for v0.2.0 — see [WORK_REMAINING.md](WORK_REMAINING.md).
+> **Status:** v0.0.1 ships the storage engine, document layer, queries, transactions, and live observers. Sync is planned for a later preview release — see [WORK_REMAINING.md](WORK_REMAINING.md).
 
 ## Rust API
 

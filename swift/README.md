@@ -42,7 +42,7 @@ Swift Package Manager — `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/yourusername/raft-db", from: "0.1.0"),
+    .package(url: "https://github.com/AdebayoGit/raft", from: "0.0.1"),
 ]
 ```
 

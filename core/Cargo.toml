@@ -1,6 +1,6 @@
 [package]
 name = "raft-db"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 # MSRV — highest requirement in the dependency graph (getrandom 0.4).
 rust-version = "1.85"

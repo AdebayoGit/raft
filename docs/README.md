@@ -43,4 +43,4 @@ These cross-platform docs go deeper on each individual surface, with more exampl
 
 ## Versioning
 
-These docs match raft-db v0.1.0. API stability follows semver — minor versions are additive, major versions are allowed to break the public surface.
+These docs match raft-db v0.0.1. API stability follows semver — minor versions are additive, major versions are allowed to break the public surface.
