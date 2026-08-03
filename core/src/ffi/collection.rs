@@ -14,7 +14,6 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
-use std::slice;
 
 use crate::index::DocId;
 use crate::query::Document;
@@ -44,7 +43,7 @@ pub unsafe extern "C" fn rft_collection_put(
             Ok(h) => h,
             Err(e) => return e,
         };
-        if collection.is_null() || (doc_json.is_null() && doc_json_len > 0) {
+        if collection.is_null() {
             return RftError::NullPointer;
         }
 
@@ -52,7 +51,10 @@ pub unsafe extern "C" fn rft_collection_put(
             Ok(s) => s,
             Err(_) => return RftError::InvalidUtf8,
         };
-        let json = unsafe { slice::from_raw_parts(doc_json, doc_json_len) };
+        let json = match unsafe { super::input_slice(doc_json, doc_json_len) } {
+            Ok(value) => value,
+            Err(e) => return e,
+        };
         let doc: Document = match super::document_from_json(json) {
             Ok(d) => d,
             Err(e) => return e,
@@ -85,8 +87,7 @@ pub unsafe extern "C" fn rft_collection_put_auto(
             Ok(h) => h,
             Err(e) => return e,
         };
-        if collection.is_null() || out_doc_id.is_null() || (doc_json.is_null() && doc_json_len > 0)
-        {
+        if collection.is_null() || out_doc_id.is_null() {
             return RftError::NullPointer;
         }
 
@@ -94,7 +95,10 @@ pub unsafe extern "C" fn rft_collection_put_auto(
             Ok(s) => s,
             Err(_) => return RftError::InvalidUtf8,
         };
-        let json = unsafe { slice::from_raw_parts(doc_json, doc_json_len) };
+        let json = match unsafe { super::input_slice(doc_json, doc_json_len) } {
+            Ok(value) => value,
+            Err(e) => return e,
+        };
         let doc: Document = match super::document_from_json(json) {
             Ok(d) => d,
             Err(e) => return e,

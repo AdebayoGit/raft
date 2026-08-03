@@ -1,8 +1,8 @@
 //! Live-handle registry — stale-handle and double-free protection.
 //!
-//! Every heap-allocated FFI handle (`RaftDb`, `RaftTransaction`,
-//! `RaftQueryResult`) is registered here on creation and unregistered on
-//! free. Entry points validate membership *before* dereferencing, so a
+//! Every FFI handle is registered here on creation and unregistered on
+//! free. Transaction handles are monotonic opaque tokens; the other handles
+//! are heap allocated. Entry points validate membership *before* dereferencing, so a
 //! freed or garbage pointer produces [`RftError::InvalidHandle`] instead
 //! of undefined behaviour, and concurrent double-free races are resolved
 //! by the registry mutex (exactly one caller wins the unregister).
@@ -11,8 +11,10 @@
 //! in principle defeat the check, but in that case the pointer refers to
 //! a *valid* handle of the same type, so no memory unsafety results.
 
-use std::collections::BTreeSet;
-use std::sync::Mutex;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
+
+use crate::database::DbTransaction;
 
 /// A set of live handle addresses for one handle type.
 pub(super) struct LiveSet(Mutex<BTreeSet<usize>>);
@@ -45,12 +47,43 @@ impl LiveSet {
 
 /// Live database handles.
 pub(super) static LIVE_DBS: LiveSet = LiveSet::new();
-/// Live transaction handles.
-pub(super) static LIVE_TXNS: LiveSet = LiveSet::new();
 /// Live query-result handles.
 pub(super) static LIVE_QUERY_RESULTS: LiveSet = LiveSet::new();
 /// Live collection handles.
 pub(super) static LIVE_COLLS: LiveSet = LiveSet::new();
+
+pub(super) type SharedTransaction = Arc<Mutex<Option<DbTransaction>>>;
+
+/// Transaction handles are tokens only. The registry owns the state so
+/// operations never construct references from a pointer that another thread
+/// can concurrently free.
+pub(super) struct TransactionRegistry(Mutex<BTreeMap<usize, SharedTransaction>>);
+
+impl TransactionRegistry {
+    pub(super) const fn new() -> Self {
+        Self(Mutex::new(BTreeMap::new()))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<usize, SharedTransaction>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(super) fn register<T>(&self, ptr: *const T, transaction: DbTransaction) {
+        self.lock()
+            .insert(ptr as usize, Arc::new(Mutex::new(Some(transaction))));
+    }
+
+    pub(super) fn get<T>(&self, ptr: *const T) -> Option<SharedTransaction> {
+        self.lock().get(&(ptr as usize)).cloned()
+    }
+
+    /// Atomically prevents new operations from acquiring this transaction.
+    pub(super) fn remove<T>(&self, ptr: *const T) -> Option<SharedTransaction> {
+        self.lock().remove(&(ptr as usize))
+    }
+}
+
+pub(super) static LIVE_TXNS: TransactionRegistry = TransactionRegistry::new();
 
 #[cfg(test)]
 mod tests {

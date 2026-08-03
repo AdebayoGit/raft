@@ -23,6 +23,7 @@ use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
+#[cfg(test)]
 use std::slice;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -198,17 +199,16 @@ pub unsafe extern "C" fn rft_coll_get_many(
             Ok(c) => c,
             Err(e) => return e,
         };
-        if out_buf.is_null() || (ids.is_null() && count > 0) {
+        if out_buf.is_null() {
             return RftError::NullPointer;
         }
         let handle = match unsafe { super::live_db(c.db) } {
             Ok(h) => h,
             Err(e) => return e,
         };
-        let id_slice = if count == 0 {
-            &[][..]
-        } else {
-            unsafe { slice::from_raw_parts(ids, count) }
+        let id_slice = match unsafe { super::input_slice(ids, count) } {
+            Ok(value) => value,
+            Err(e) => return e,
         };
         let doc_ids: Vec<DocId> = id_slice.iter().map(|&id| DocId(id)).collect();
 

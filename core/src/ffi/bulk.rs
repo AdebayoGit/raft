@@ -14,6 +14,7 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
+#[cfg(test)]
 use std::slice;
 
 use crate::index::DocId;
@@ -104,17 +105,16 @@ pub unsafe extern "C" fn rft_collection_put_many(
             Ok(h) => h,
             Err(e) => return e,
         };
-        if collection.is_null() || (batch.is_null() && batch_len > 0) {
+        if collection.is_null() {
             return RftError::NullPointer;
         }
         let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
             Ok(s) => s,
             Err(_) => return RftError::InvalidUtf8,
         };
-        let bytes = if batch_len == 0 {
-            &[][..]
-        } else {
-            unsafe { slice::from_raw_parts(batch, batch_len) }
+        let bytes = match unsafe { super::input_slice(batch, batch_len) } {
+            Ok(value) => value,
+            Err(e) => return e,
         };
         // Spans let the engine persist the caller's bytes verbatim — decode
         // once for the in-memory state, never re-encode for disk.
@@ -154,17 +154,17 @@ pub unsafe extern "C" fn rft_collection_delete_many(
             Ok(h) => h,
             Err(e) => return e,
         };
-        if collection.is_null() || (ids.is_null() && count > 0) {
+        if collection.is_null() {
             return RftError::NullPointer;
         }
         let coll = match unsafe { CStr::from_ptr(collection) }.to_str() {
             Ok(s) => s,
             Err(_) => return RftError::InvalidUtf8,
         };
-        if count == 0 {
-            return RftError::Ok;
-        }
-        let id_slice = unsafe { slice::from_raw_parts(ids, count) };
+        let id_slice = match unsafe { super::input_slice(ids, count) } {
+            Ok(value) => value,
+            Err(e) => return e,
+        };
         let doc_ids: Vec<DocId> = id_slice.iter().map(|&id| DocId(id)).collect();
         match handle.database().delete_batch(coll, &doc_ids) {
             Ok(()) => RftError::Ok,

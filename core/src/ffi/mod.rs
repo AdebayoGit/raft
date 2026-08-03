@@ -80,7 +80,6 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::path::{Component, Path, PathBuf};
 use std::ptr;
-use std::slice;
 
 use crate::database::Database;
 
@@ -95,6 +94,23 @@ pub const RFT_MAX_DOC_JSON_LEN: usize = 16 * 1024 * 1024;
 /// `rft_observe_query_dart_port`). Larger payloads are rejected with
 /// [`RftError::PayloadTooLarge`].
 pub const RFT_MAX_QUERY_JSON_LEN: usize = 64 * 1024;
+
+/// Convert a foreign input pointer and element count into a borrowed slice.
+/// Empty inputs never dereference the pointer (including null); non-empty
+/// inputs reject null before constructing a slice.
+pub(crate) unsafe fn input_slice<'a, T>(ptr: *const T, len: usize) -> Result<&'a [T], RftError> {
+    if len == 0 {
+        return Ok(&[]);
+    }
+    if ptr.is_null() {
+        return Err(RftError::NullPointer);
+    }
+    let element_size = std::mem::size_of::<T>();
+    if element_size != 0 && len > isize::MAX as usize / element_size {
+        return Err(RftError::PayloadTooLarge);
+    }
+    Ok(unsafe { std::slice::from_raw_parts(ptr, len) })
+}
 
 /// Parse a document JSON envelope, enforcing the size cap. Shared by
 /// the collection and transaction put paths.
@@ -348,12 +364,14 @@ pub unsafe extern "C" fn rft_put(
             Ok(h) => h,
             Err(e) => return e,
         };
-        if (key.is_null() && key_len > 0) || (value.is_null() && value_len > 0) {
-            return RftError::NullPointer;
-        }
-
-        let key_slice = unsafe { slice::from_raw_parts(key, key_len) };
-        let value_slice = unsafe { slice::from_raw_parts(value, value_len) };
+        let key_slice = match unsafe { input_slice(key, key_len) } {
+            Ok(value) => value,
+            Err(e) => return e,
+        };
+        let value_slice = match unsafe { input_slice(value, value_len) } {
+            Ok(value) => value,
+            Err(e) => return e,
+        };
 
         match handle
             .database()
@@ -395,11 +413,13 @@ pub unsafe extern "C" fn rft_get(
             Ok(h) => h,
             Err(e) => return e,
         };
-        if (key.is_null() && key_len > 0) || out_len.is_null() {
+        if out_len.is_null() {
             return RftError::NullPointer;
         }
-
-        let key_slice = unsafe { slice::from_raw_parts(key, key_len) };
+        let key_slice = match unsafe { input_slice(key, key_len) } {
+            Ok(value) => value,
+            Err(e) => return e,
+        };
 
         let value = match handle.database().raw_get(key_slice) {
             Ok(Some(v)) => v,
@@ -427,11 +447,10 @@ pub unsafe extern "C" fn rft_delete(db: *mut RaftDb, key: *const u8, key_len: us
             Ok(h) => h,
             Err(e) => return e,
         };
-        if key.is_null() && key_len > 0 {
-            return RftError::NullPointer;
-        }
-
-        let key_slice = unsafe { slice::from_raw_parts(key, key_len) };
+        let key_slice = match unsafe { input_slice(key, key_len) } {
+            Ok(value) => value,
+            Err(e) => return e,
+        };
 
         match handle.database().raw_delete(key_slice.to_vec()) {
             Ok(()) => RftError::Ok,
@@ -484,27 +503,13 @@ pub(crate) unsafe fn live_db<'a>(db: *mut RaftDb) -> Result<&'a RaftDb, RftError
     Ok(unsafe { &*db })
 }
 
-/// Resolve a transaction handle against the live registry. Same
-/// contract as [`live_db`], but yields a mutable reference (transaction
-/// handles are single-threaded by API contract).
-///
-/// # Safety
-///
-/// If `txn` is live it was produced by
-/// [`rft_transaction_begin`](transaction::rft_transaction_begin) and not
-/// yet finalised, so it points to a valid `RaftTransaction`. The caller
-/// must not use the same transaction handle from multiple threads
-/// concurrently.
-pub(crate) unsafe fn live_txn<'a>(
-    txn: *mut RaftTransaction,
-) -> Result<&'a mut RaftTransaction, RftError> {
+/// Clone the registry-owned transaction state for a token. Operations lock
+/// the returned state; commit/rollback first remove it from the registry.
+pub(crate) fn live_txn(txn: *mut RaftTransaction) -> Result<registry::SharedTransaction, RftError> {
     if txn.is_null() {
         return Err(RftError::NullPointer);
     }
-    if !registry::LIVE_TXNS.is_live(txn) {
-        return Err(RftError::InvalidHandle);
-    }
-    Ok(unsafe { &mut *txn })
+    registry::LIVE_TXNS.get(txn).ok_or(RftError::InvalidHandle)
 }
 
 /// Resolve a query-result handle against the live registry. Same
@@ -581,6 +586,24 @@ mod tests {
     fn guard_converts_panic_into_error_code() {
         let code = guard(|| panic!("injected panic"));
         assert_eq!(code, RftError::InternalPanic);
+    }
+
+    #[test]
+    fn foreign_input_slice_handles_empty_null_and_non_empty_inputs() {
+        let byte = 7u8;
+        let cases = [
+            (ptr::null(), 0, Ok(&[][..])),
+            (&byte as *const u8, 0, Ok(&[][..])),
+            (ptr::null(), 1, Err(RftError::NullPointer)),
+            (&byte as *const u8, 1, Ok(std::slice::from_ref(&byte))),
+        ];
+        for (input, len, expected) in cases {
+            assert_eq!(unsafe { input_slice(input, len) }, expected);
+        }
+        assert_eq!(
+            unsafe { input_slice(&byte, isize::MAX as usize + 1) },
+            Err(RftError::PayloadTooLarge)
+        );
     }
 
     #[test]
@@ -1000,6 +1023,55 @@ mod tests {
             let upd = r#"{"id":1,"fields":{"name":{"String":"FromTxn"}}}"#;
             rft_transaction_put(txn, coll.as_ptr(), upd.as_ptr(), upd.len());
             assert_eq!(rft_transaction_commit(txn), RftError::TransactionConflict);
+
+            rft_close(db);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn concurrent_transaction_operations_and_consumers_are_linearizable() {
+        unsafe {
+            let (db, dir) = open_test_db("txn_concurrent");
+            let coll = CString::new("users").unwrap();
+            let mut txn: *mut RaftTransaction = ptr::null_mut();
+            assert_eq!(rft_transaction_begin(db, &mut txn), RftError::Ok);
+
+            let token = txn as usize;
+            let mut workers = Vec::new();
+            for id in 1..=16u64 {
+                workers.push(std::thread::spawn(move || {
+                    let coll = CString::new("users").unwrap();
+                    let doc = format!(r#"{{"id":{id},"fields":{{}}}}"#);
+                    rft_transaction_put(
+                        token as *mut RaftTransaction,
+                        coll.as_ptr(),
+                        doc.as_ptr(),
+                        doc.len(),
+                    )
+                }));
+            }
+            for worker in workers {
+                assert_eq!(worker.join().unwrap(), RftError::Ok);
+            }
+
+            let a =
+                std::thread::spawn(move || rft_transaction_commit(token as *mut RaftTransaction));
+            let b =
+                std::thread::spawn(move || rft_transaction_commit(token as *mut RaftTransaction));
+            let results = [a.join().unwrap(), b.join().unwrap()];
+            assert_eq!(results.iter().filter(|&&r| r == RftError::Ok).count(), 1);
+            assert_eq!(
+                results
+                    .iter()
+                    .filter(|&&r| r == RftError::InvalidHandle)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                rft_transaction_delete(txn, coll.as_ptr(), 1),
+                RftError::InvalidHandle
+            );
 
             rft_close(db);
             std::fs::remove_dir_all(&dir).ok();

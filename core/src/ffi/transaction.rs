@@ -3,7 +3,7 @@
 //! A transaction is an opaque, owned handle. The caller must end its
 //! lifetime by calling either [`rft_transaction_commit`] or
 //! [`rft_transaction_rollback`] — both consume the handle. Forgetting to
-//! call either leaks the buffer (no rollback is implicit).
+//! call either retains the registry state (no rollback is implicit).
 //!
 //! Reads are tracked for optimistic concurrency control: a commit fails
 //! with [`RftError::TransactionConflict`] if any document read during
@@ -12,7 +12,7 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
-use std::slice;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::database::DatabaseError;
 use crate::index::DocId;
@@ -25,8 +25,10 @@ use super::write_buffer;
 
 /// Opaque transaction handle.
 pub struct RaftTransaction {
-    inner: Option<crate::database::DbTransaction>,
+    _token: u8,
 }
+
+static NEXT_TRANSACTION_TOKEN: AtomicUsize = AtomicUsize::new(1);
 
 /// Begin a new transaction. The caller takes ownership of the returned
 /// handle and must end it with `commit` or `rollback`.
@@ -50,8 +52,19 @@ pub unsafe extern "C" fn rft_transaction_begin(
         }
 
         let txn = handle.database().begin_transaction();
-        let raw = Box::into_raw(Box::new(RaftTransaction { inner: Some(txn) }));
-        super::registry::LIVE_TXNS.register(raw);
+        // This is an opaque, never-dereferenced token rather than an address.
+        // Monotonic tokens avoid allocator address reuse making a stale handle
+        // accidentally refer to a later transaction.
+        let token = match NEXT_TRANSACTION_TOKEN.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |value| value.checked_add(1),
+        ) {
+            Ok(value) => value,
+            Err(_) => return RftError::IoError,
+        };
+        let raw = token as *mut RaftTransaction;
+        super::registry::LIVE_TXNS.register(raw, txn);
         unsafe { ptr::write(out_txn, raw) };
         RftError::Ok
     })
@@ -80,11 +93,12 @@ pub unsafe extern "C" fn rft_transaction_get(
     out_len: *mut usize,
 ) -> RftError {
     super::guard(|| {
-        let handle = match unsafe { super::live_txn(txn) } {
+        let state = match super::live_txn(txn) {
             Ok(h) => h,
             Err(e) => return e,
         };
-        let Some(t) = handle.inner.as_mut() else {
+        let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(t) = guard.as_mut() else {
             return RftError::InvalidHandle;
         };
         if collection.is_null() || out_len.is_null() {
@@ -123,14 +137,15 @@ pub unsafe extern "C" fn rft_transaction_put(
     doc_json_len: usize,
 ) -> RftError {
     super::guard(|| {
-        let handle = match unsafe { super::live_txn(txn) } {
+        let state = match super::live_txn(txn) {
             Ok(h) => h,
             Err(e) => return e,
         };
-        let Some(t) = handle.inner.as_mut() else {
+        let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(t) = guard.as_mut() else {
             return RftError::InvalidHandle;
         };
-        if collection.is_null() || (doc_json.is_null() && doc_json_len > 0) {
+        if collection.is_null() {
             return RftError::NullPointer;
         }
 
@@ -138,7 +153,10 @@ pub unsafe extern "C" fn rft_transaction_put(
             Ok(s) => s,
             Err(_) => return RftError::InvalidUtf8,
         };
-        let json = unsafe { slice::from_raw_parts(doc_json, doc_json_len) };
+        let json = match unsafe { super::input_slice(doc_json, doc_json_len) } {
+            Ok(bytes) => bytes,
+            Err(e) => return e,
+        };
         let doc: Document = match super::document_from_json(json) {
             Ok(d) => d,
             Err(e) => return e,
@@ -164,11 +182,12 @@ pub unsafe extern "C" fn rft_transaction_delete(
     doc_id: u64,
 ) -> RftError {
     super::guard(|| {
-        let handle = match unsafe { super::live_txn(txn) } {
+        let state = match super::live_txn(txn) {
             Ok(h) => h,
             Err(e) => return e,
         };
-        let Some(t) = handle.inner.as_mut() else {
+        let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(t) = guard.as_mut() else {
             return RftError::InvalidHandle;
         };
         if collection.is_null() {
@@ -207,13 +226,12 @@ pub unsafe extern "C" fn rft_transaction_commit(txn: *mut RaftTransaction) -> Rf
             return RftError::NullPointer;
         }
         // Unregister-wins: exactly one of a concurrent commit/rollback
-        // pair frees the handle; the loser gets InvalidHandle instead of
-        // a double-free.
-        if !super::registry::LIVE_TXNS.unregister(txn) {
+        // pair consumes the handle; the loser gets InvalidHandle.
+        let Some(state) = super::registry::LIVE_TXNS.remove(txn) else {
             return RftError::InvalidHandle;
-        }
-        let mut boxed = unsafe { Box::from_raw(txn) };
-        let Some(inner) = boxed.inner.take() else {
+        };
+        let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(inner) = guard.take() else {
             return RftError::InvalidHandle;
         };
         match inner.commit() {
@@ -239,11 +257,14 @@ pub unsafe extern "C" fn rft_transaction_rollback(txn: *mut RaftTransaction) {
     super::guard_or((), || {
         // Unregister-wins: rolling back an already-finalised or foreign
         // handle is a safe no-op.
-        if txn.is_null() || !super::registry::LIVE_TXNS.unregister(txn) {
+        if txn.is_null() {
             return;
         }
-        let mut boxed = unsafe { Box::from_raw(txn) };
-        if let Some(inner) = boxed.inner.take() {
+        let Some(state) = super::registry::LIVE_TXNS.remove(txn) else {
+            return;
+        };
+        let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(inner) = guard.take() {
             inner.rollback();
         }
     });

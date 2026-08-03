@@ -89,3 +89,4 @@ callback) so consumers see a single, ordered stream.
   `callbackFlow` handles cross-thread emission.
 - Flutter/RN: delivery relies on the Dart VM's port serialization and
   Nitro's CallInvoker dispatch respectively — both platform-guaranteed.
+Transaction operations are thread-safe and serialized per handle. Commit and rollback are linearizable handle-consuming operations: exactly one can consume a transaction, operations acquired earlier either finish first or return `InvalidHandle`, and later operations cannot acquire it. Database close still requires exclusive ownership; close all transaction and prepared-collection handles first.

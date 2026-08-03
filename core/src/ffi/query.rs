@@ -20,7 +20,6 @@
 //! ```
 
 use std::ptr;
-use std::slice;
 
 use serde::Deserialize;
 
@@ -115,11 +114,14 @@ pub unsafe extern "C" fn rft_query_execute(
             Ok(h) => h,
             Err(e) => return e,
         };
-        if out_result.is_null() || (query_json.is_null() && query_json_len > 0) {
+        if out_result.is_null() {
             return RftError::NullPointer;
         }
 
-        let json = unsafe { slice::from_raw_parts(query_json, query_json_len) };
+        let json = match unsafe { super::input_slice(query_json, query_json_len) } {
+            Ok(value) => value,
+            Err(e) => return e,
+        };
         let query = match query_from_json(json) {
             Ok(q) => q,
             Err(e) => return e,
