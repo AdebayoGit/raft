@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+- Made all C ABI byte and ID inputs safe for null pointers when the length is zero, while rejecting null non-empty inputs.
+- Made transaction handles thread-safe and commit/rollback linearizable.
+- Added the additive `ResyncRequired` observer control event across Rust, Kotlin, Dart, Swift, and TypeScript.
+- Made Rust PN-counter `value()` and `device_delta()` checked, with exact `i128` alternatives. Serialized state remains compatible; see `docs/MIGRATING.md`.
+- Added React Native Android and iOS native build jobs with exported-symbol verification.
+
 ### Added
 
 #### Core (`raft-db`)
@@ -29,7 +35,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Known gaps
 - The Kotlin, Swift, and React Native bindings do not yet expose the new batch/handle/generation C ABI (Flutter binding only); tracked in WORK_REMAINING.md.
 
-## [0.1.0] — Unreleased
+## [0.0.1] — Unreleased
 
 The first cut of Raft. Storage engine, document layer, queries, transactions, and live observers across all four platform bindings.
 
@@ -78,5 +84,5 @@ The first cut of Raft. Storage engine, document layer, queries, transactions, an
 - Swift: 35 unit tests covering RaftError, QueryDiff, LockedBool concurrency, and RaftCollection scoping.
 - React Native: 26 Jest tests covering open / put / get / delete / close / watch plus edge cases (UTF-8 keys, prefix overlap, 50-way concurrent put, post-close throws).
 
-[Unreleased]: https://github.com/AdebayoGit/raft/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/AdebayoGit/raft/releases/tag/v0.1.0
+[Unreleased]: https://github.com/AdebayoGit/raft/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/AdebayoGit/raft/releases/tag/v0.0.1
